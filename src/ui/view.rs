@@ -362,13 +362,19 @@ impl App {
 
     /// A user gesture on a button, checkbox or dropdown of the sound panels.
     fn on_sound_command(&mut self, id: usize) {
+        // read the picks before the flush below re-renders the combos
+        let (sens, preset) = (self.selection(self.sens), self.selection(self.eq_preset));
+        // a paced slider step still waiting goes out first, so it cannot land after (and undo) this command
+        if let Some(s) = self.step_slider {
+            self.on_scroll(TB_ENDTRACK, s);
+        }
         let c = match id {
             ID_NC_MODE..=112 => self.model.nc_mode([Mode::Off, Mode::Nc, Mode::Ambient][id - ID_NC_MODE]),
             ID_VOICE => self.model.nc_toggle_voice(),
             ID_AUTO => self.model.nc_toggle_auto(),
             ID_DSEE => self.model.toggle_dsee(),
-            ID_SENS => self.model.nc_sens(self.selection(self.sens)),
-            ID_EQ_PRESET => self.model.eq_select_preset(self.selection(self.eq_preset)),
+            ID_SENS => self.model.nc_sens(sens),
+            ID_EQ_PRESET => self.model.eq_select_preset(preset),
             _ => return,
         };
         self.send(c);
