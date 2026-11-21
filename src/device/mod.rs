@@ -10,6 +10,7 @@ pub mod handshake;
 #[cfg(test)]
 pub mod mock;
 pub mod ncasm;
+pub mod peripheral;
 pub mod power;
 pub mod state;
 pub mod stc;
@@ -35,6 +36,8 @@ pub static FEATURES: &[&dyn Feature] = &[
     &power::PowerOffFeature,
     &power::AutoPauseFeature,
     &wearing::WearingFeature,
+    &peripheral::MultipointFeature,
+    &peripheral::DevicesFeature,
 ];
 
 /// How long the worker waits for incoming frames between checks of the command channel.

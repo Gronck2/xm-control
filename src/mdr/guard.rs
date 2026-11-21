@@ -97,18 +97,19 @@ const ALLOW: &[(Table, &[u8], Kind)] = &[
     (Table::T1, &[0x28, 0x05], Kind::Set(power_args)),
     (Table::T1, &[0xF6, 0x01], Kind::Get), // auto pause on removal
     // F8 01 shares F8 with the denied F8 09 reset; exactly one `00|01` after it
-    (Table::T1, &[0xF8, 0x01], Kind::Set(autopause_args)), // auto pause SET (00 = ON)
-    (Table::T1, &[0x12, 0x02], Kind::Get),                 // codec indicator
-    (Table::T1, &[0xD6, 0x01], Kind::Get),                 // general setting 1
-    (Table::T1, &[0xD6, 0x02], Kind::Get),                 // general setting 2
-    (Table::T1, &[0xD6, 0x03], Kind::Get),                 // general setting 3
-    (Table::T1, &[0xD6, 0x04], Kind::Get),                 // general setting 4
-    (Table::T2, &[0xF2, 0x00], Kind::Get),                 // wearing status
-    (Table::T2, &[0x36, 0x01], Kind::Get),                 // multipoint (source switch control)
-    (Table::T2, &[0x36, 0x02], Kind::Get),                 // paired device list
-    (Table::T2, &[0x32, 0x02], Kind::Get),                 // pairing mode status
-    (Table::T2, &[0x5A, 0x00], Kind::Get),                 // safe listening HBS_1
-    (Table::T2, &[0x5A, 0x02], Kind::Get),                 // safe listening HBS_2
+    (Table::T1, &[0xF8, 0x01], Kind::Set(autopause_args)),  // auto pause SET (00 = ON)
+    (Table::T1, &[0x12, 0x02], Kind::Get),                  // codec indicator
+    (Table::T1, &[0xD6, 0x01], Kind::Get),                  // general setting 1
+    (Table::T1, &[0xD6, 0x02], Kind::Get),                  // general setting 2
+    (Table::T1, &[0xD6, 0x03], Kind::Get),                  // general setting 3
+    (Table::T1, &[0xD6, 0x04], Kind::Get),                  // general setting 4
+    (Table::T2, &[0xF2, 0x00], Kind::Get),                  // wearing status
+    (Table::T2, &[0x36, 0x01], Kind::Get),                  // multipoint (source switch control)
+    (Table::T2, &[0x36, 0x02], Kind::Get),                  // paired device list
+    (Table::T2, &[0x32, 0x02], Kind::Get),                  // pairing mode status
+    (Table::T2, &[0x38, 0x01], Kind::Set(multipoint_args)), // multipoint SET (1 = on, src/device/peripheral.rs)
+    (Table::T2, &[0x5A, 0x00], Kind::Get),                  // safe listening HBS_1
+    (Table::T2, &[0x5A, 0x02], Kind::Get),                  // safe listening HBS_2
 ];
 
 /// For SET rows that are a complete payload: no bytes may follow.
@@ -124,6 +125,11 @@ fn stc_enable_args(a: &[u8]) -> bool {
 /// After `28 05`: `<10 WHEN_REMOVED | 11 DISABLE> 00` (lastSelect always 0).
 fn power_args(a: &[u8]) -> bool {
     matches!(a, [0x10 | 0x11, 0])
+}
+
+/// After `38 01`: `<00 off | 01 on>` (raw, not inverted).
+fn multipoint_args(a: &[u8]) -> bool {
+    matches!(a, [0..=1])
 }
 
 /// After `F8 01`: `<00 ON | 01 OFF>`.
@@ -165,8 +171,8 @@ fn denied(table: Table, p: &[u8]) -> bool {
         (Table::T1, 0xF8) => at(1) == Some(0x09),
         // FACTORY_POWER_OFF, LINK_CONTROL
         (Table::T1, 0x24) => (at(1) == Some(0x03) && at(2) == Some(0xFF)) || at(1) == Some(0x07),
-        // UNPAIR
-        (Table::T2, 0x3C) => at(2) == Some(0x02),
+        // UNPAIR, connect, disconnect, source switch: every form of 3C, whatever the argument bytes or length
+        (Table::T2, 0x3C) => true,
         // pairing mode, LEA, PARTY
         (Table::T2, 0x34 | 0x60..=0x69 | 0x70..=0x7C) => true,
         _ => false,
@@ -245,6 +251,41 @@ mod tests {
     }
 
     #[test]
+    fn every_3c_form_is_denied_and_34_stays_denied() {
+        let mut cases: Vec<Vec<u8>> = vec![vec![0x3C], vec![0x3C, 0x00], vec![0x3C, 0x01, 0x01]];
+        for h in [&[0x3C, 0x01][..], &[0x3C, 0x00, 0x00], &[0x3C, 0x00, 0x01], &[0x3C, 0x00, 0x02], &[0x3C, 0x02, 0x02]] {
+            cases.push(with_mac(h));
+        }
+        for b in 0..=255u8 {
+            cases.push(vec![0x3C, b]);
+            cases.push(with_mac(&[0x3C, b]));
+            for c in 0..=255u8 {
+                cases.push(vec![0x3C, b, c]);
+                cases.push(with_mac(&[0x3C, b, c]));
+            }
+        }
+        cases.extend([vec![0x34, 0x02, 0x01, 0x00], vec![0x34, 0x00, 0x00, 0x00], vec![0x34]]);
+        for p in cases {
+            for mode in [Mode::Normal, Mode::ReadOnly] {
+                assert_eq!(check(Table::T2, &p, mode).unwrap_err(), GuardError::Denied, "{p:02X?}");
+            }
+        }
+        // the same bytes on table 1 are not the T2 denial (3C is in the T1 DFU range anyway)
+        assert_eq!(check(Table::T1, &[0x3C, 0x01], Mode::Normal).unwrap_err(), GuardError::Denied);
+    }
+
+    #[test]
+    fn multipoint_set_is_the_only_t2_38_row() {
+        for v in [0, 1] {
+            assert!(check(Table::T2, &[0x38, 0x01, v], Mode::Normal).is_ok());
+            assert_eq!(check(Table::T2, &[0x38, 0x01, v], Mode::ReadOnly).unwrap_err(), GuardError::ReadOnly);
+        }
+        for p in [&[0x38, 0x01, 2][..], &[0x38, 0x01], &[0x38, 0x01, 0, 0]] {
+            assert_eq!(check(Table::T2, p, Mode::Normal).unwrap_err(), GuardError::NotAllowed, "{p:02X?}");
+        }
+        assert_eq!(ALLOW.iter().filter(|r| r.0 == Table::T2 && r.1[0] == 0x38).count(), 1);
+    }
+    #[test]
     fn unknown_commands_rejected() {
         assert_eq!(check(Table::T1, &[], Mode::Normal).unwrap_err(), GuardError::Empty);
         for (t, p) in [
@@ -253,7 +294,6 @@ mod tests {
             (Table::T1, &[0xE8, 0x03, 0x00]), // listening modes
             (Table::T1, &[0x24, 0x03, 0x01]), // power off now: out of scope
             (Table::T2, &[0x04, 0x01]),       // T1 entry on the wrong table
-            (Table::T2, &[0x3C, 0x01, 0x01]), // source switch / connect
         ] {
             assert_eq!(check(t, p, Mode::Normal).unwrap_err(), GuardError::NotAllowed, "{t:?} {p:02X?}");
         }

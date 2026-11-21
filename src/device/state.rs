@@ -22,6 +22,9 @@ pub struct DeviceState {
     /// Auto pause on removal: true = ON.
     pub autopause: Option<bool>,
     pub wearing: Option<super::wearing::Wearing>,
+    /// Multipoint: true = enabled (raw u8, not inverted).
+    pub multipoint: Option<bool>,
+    pub devices: Option<Vec<super::peripheral::PairedDevice>>,
     /// Payload (after the two id bytes) of the last frame the test feature accepted.
     #[cfg(test)]
     pub dummy: Option<Vec<u8>>,
