@@ -262,7 +262,7 @@ impl Worker {
                 // the new value arrives as a reply or NTFY; the state is not guessed
                 let frames = s.poll_notifications(Duration::ZERO)?;
                 self.dispatch(frames)?;
-                for g in f.after_set() {
+                for g in f.after_set(info) {
                     self.fetch(s, &g)?;
                 }
             }

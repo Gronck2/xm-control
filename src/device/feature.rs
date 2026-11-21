@@ -41,7 +41,7 @@ pub trait Feature: Sync {
     }
 
     /// GETs to run right after a successful SET (a re-read of what the headset accepted). Default: none.
-    fn after_set(&self) -> Vec<Get> {
+    fn after_set(&self, _: &DeviceInfo) -> Vec<Get> {
         Vec::new()
     }
 

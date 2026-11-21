@@ -73,9 +73,13 @@ impl Feature for MultipointFeature {
         Parsed::Changed
     }
 
-    /// Re-read the switch and the list (toggling can change who is connected).
-    fn after_set(&self) -> Vec<Get> {
-        vec![multipoint_get(), list_get()]
+    /// Re-read the switch and, if the list is used with this headset, the list (toggling can change who is connected).
+    fn after_set(&self, info: &DeviceInfo) -> Vec<Get> {
+        let mut v = vec![multipoint_get()];
+        if DevicesFeature.available(info) {
+            v.push(list_get());
+        }
+        v
     }
 
     /// `on` or `off`.
@@ -317,6 +321,24 @@ mod tests {
         let s = synced(&rx);
         assert_eq!(s.multipoint, Some(false));
         assert_eq!(s.devices.as_ref().map(|d| (d.len(), d[0].name.as_str(), d[0].connected)), Some((1, "Phone", true)));
+    }
+
+    #[test]
+    fn set_without_the_list_function_rereads_only_the_switch() {
+        let h = FakeHeadset::xm6(&[], &[0x31], true);
+        let writes = h.writes.clone();
+        let (handle, rx) = start(h);
+        synced(&rx);
+        handle.send(Command::Set { feature: "multipoint".into(), value: "on".into() }).unwrap();
+        handle.send(Command::Get { feature: "multipoint".into() }).unwrap();
+        let sent = || -> Vec<Vec<u8>> {
+            let w = writes.lock().unwrap();
+            w.iter().filter_map(|b| unpack(b).ok()).filter(|f| f.data_type == TYPE_T2 && f.payload != [0x06, 0x00]).map(|f| f.payload).collect()
+        };
+        while sent().len() < 4 {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(sent(), [vec![0x36, 0x01], vec![0x38, 0x01, 1], vec![0x36, 0x01], vec![0x36, 0x01]]);
     }
 
     #[test]
