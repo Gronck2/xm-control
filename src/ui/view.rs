@@ -7,6 +7,7 @@ use crate::bt::enumerate::{Device, paired_devices};
 use crate::device::Command;
 use crate::device::ncasm::Mode;
 use crate::device::{DeviceHandle, Event};
+use std::cell::Cell;
 use std::ptr::{null, null_mut};
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::{Duration, Instant};
@@ -14,7 +15,7 @@ use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::*;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Controls::{
-    ICC_BAR_CLASSES, INITCOMMONCONTROLSEX, InitCommonControlsEx, TB_ENDTRACK, TBM_SETPOS, TBM_SETRANGE, TBS_AUTOTICKS, TBS_NOTICKS, TBS_VERT,
+    ICC_BAR_CLASSES, INITCOMMONCONTROLSEX, InitCommonControlsEx, TB_THUMBTRACK, TBM_SETPOS, TBM_SETRANGE, TBS_AUTOTICKS, TBS_NOTICKS, TBS_VERT,
 };
 use windows_sys::Win32::UI::HiDpi::{AdjustWindowRectExForDpi, GetDpiForWindow};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
@@ -376,7 +377,8 @@ impl App {
     fn on_scroll(&mut self, code: u32, slider: HWND) {
         // SAFETY: `slider` is the control handle the notification came with.
         let pos = unsafe { SendMessageW(slider, TBM_GETPOS, 0, 0) } as i32;
-        let end = code == TB_ENDTRACK;
+        // every code but TB_THUMBTRACK is final (keys, wheel, page, ENDTRACK, capture loss); the model drops the duplicate SET of the ENDTRACK that follows
+        let end = code != TB_THUMBTRACK;
         if slider == self.level_slider {
             let c = if end { self.model.nc_level_released(pos as u8) } else { self.model.nc_level_moved(pos as u8, Instant::now()) };
             self.send(c);
@@ -453,6 +455,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
     // Only these messages touch the App: user gestures (BN_CLICKED, CBN_SELCHANGE, trackbar WM_HSCROLL/WM_VSCROLL) and our own posts. Everything else
     // (WM_SIZE, WM_CTLCOLOR*, other notifications, ...) can arrive re-entrantly from our own calls and must not create a second `&mut App`. The render calls
     // are silent by design: TBM_SETPOS, BM_SETCHECK and CB_SETCURSEL send no WM_HSCROLL, BN_CLICKED or CBN_SELCHANGE, so a headset value never loops back.
+    // EnableWindow/ShowWindow can still make a control notify us synchronously; `IN_HANDLER` defers such a message by posting it back.
     if msg == WM_DESTROY {
         unsafe { PostQuitMessage(0) };
         return 0;
@@ -462,8 +465,19 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
     }
     // SAFETY: the pointer is set once in `run` to a leaked `App` and cleared in WM_NCDESTROY; only the UI thread gets here.
+    // A handler is running (`&mut App` is live) and one of our own calls re-entered with a gesture: e.g. render() disabling a trackbar the user drags
+    // sends WM_CANCELMODE, and the trackbar can answer with TB_ENDTRACK. Handle it after the handler returns.
+    if msg != WM_NCDESTROY && IN_HANDLER.get() {
+        if msg != WM_DPICHANGED {
+            // posting to our own window only fails if it is gone
+            unsafe { PostMessageW(hwnd, msg, wparam, lparam) };
+            return 0;
+        }
+        return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
+    }
     let app = unsafe { (GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut App).as_mut() };
     let Some(app) = app else { return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) } };
+    IN_HANDLER.set(msg != WM_NCDESTROY);
     match msg {
         WM_COMMAND => match wparam & 0xFFFF {
             ID_CONNECT => app.on_connect_button(),
@@ -497,9 +511,18 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 DeleteObject(app.font);
             }
         }
-        _ => return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
+        _ => {
+            IN_HANDLER.set(false);
+            return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
+        }
     }
+    IN_HANDLER.set(false);
     0
+}
+
+thread_local! {
+    /// true while a wndproc arm holds `&mut App`.
+    static IN_HANDLER: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Opens the window and runs the message loop until it is closed.
