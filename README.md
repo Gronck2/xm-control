@@ -1,7 +1,7 @@
 # XM Control
 
 A Windows app (Rust) that controls Sony WH-1000XM6 headphones from a PC, without the phone app:
-noise cancelling and ambient sound, equalizer, DSEE, Speak-to-Chat, auto power off, multipoint and more.
+noise cancelling and ambient sound, equalizer (10 bands and presets; the XM6 has no Clear Bass slot), DSEE, Speak-to-Chat, auto power off, multipoint and more.
 It talks to the headphones directly over Bluetooth Classic (RFCOMM, Sony's "MDR" protocol).
 
 Status: early development, nothing works yet.

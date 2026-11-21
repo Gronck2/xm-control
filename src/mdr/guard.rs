@@ -74,6 +74,8 @@ const ALLOW: &[(Table, &[u8], Kind)] = &[
     (Table::T1, &[0x22, 0x08], Kind::Get),              // battery level with threshold
     (Table::T1, &[0x66, 0x19], Kind::Get),              // NC/ASM noise adaptation (feature row, src/device/ncasm.rs)
     (Table::T1, &[0x68, 0x19], Kind::Set(nc_set_args)), // NC/ASM SET
+    (Table::T1, &[0x50, 0x04, 0x01], Kind::Get),        // EQ capability, English names (feature row, src/device/eq.rs)
+    (Table::T1, &[0x58, 0x00], Kind::Set(eq_set_args)), // EQ SET
     (Table::T1, &[0x5A, 0x00], Kind::Get),              // EQ band frequencies
     (Table::T1, &[0x56, 0x00], Kind::Get),              // EQ parameters
     (Table::T1, &[0x52, 0x00], Kind::Get),              // EQ status
@@ -102,6 +104,19 @@ const ALLOW: &[(Table, &[u8], Kind)] = &[
 /// The 7 bytes of an NC/ASM `68 19` SET (also used to check replies): valueChange, totalEffect, mode, ambientMode, level 1..=20, autoAsm, sensitivity.
 pub fn nc_set_args(a: &[u8]) -> bool {
     matches!(a, [0..=1, 0..=1, 0..=1, 0..=1, 1..=20, 0..=1, 0..=2])
+}
+
+/// Presets an XM6 accepts (FW 3.0): HEAVY, CLEAR, HARD, SOFT, CUSTOM and the user slots. Others (OFF, ROCK, ...) are rejected by the device.
+/// shortcut: fixed list from the reference docs for FW 3.0, revisit with captures after firmware updates.
+pub const EQ_PRESETS: [u8; 10] = [0x30, 0x31, 0x32, 0x33, 0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5];
+
+/// The bytes after `58 00`: `<preset> 00` (preset only) or `<preset> 0A <10 raw steps 0..=12>`.
+pub fn eq_set_args(a: &[u8]) -> bool {
+    match a {
+        [p, 0] => EQ_PRESETS.contains(p),
+        [p, 10, steps @ ..] => EQ_PRESETS.contains(p) && steps.len() == 10 && steps.iter().all(|&s| s <= 12),
+        _ => false,
+    }
 }
 
 fn denied(table: Table, p: &[u8]) -> bool {
