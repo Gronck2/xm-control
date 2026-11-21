@@ -13,7 +13,7 @@ The headline feature of the headphones.
 - Mapping: Off = totalEffect OFF (0); NC = ON (1) + mode NC (0); Ambient = ON + mode ASM (1); focus on voice = ambientMode VOICE (1); level 1..20; auto ambient = `autoAsm` NcAsmOnOff (OFF 0, ON 1, **not** inverted); sensitivity STANDARD 0 / HIGH 1 / LOW 2. valueChange UNDER_CHANGING 0 / CHANGED 1.
 - Slider drag: send `valueChange` UNDER_CHANGING while dragging and CHANGED on release; the core rate-limits drag updates (recommend max ~10/s) and always sends the final CHANGED.
 - Always write the full tuple (read-modify-write from current state) so unrelated fields are not reset.
-- Dev CLI: `--get nc`, `--set nc <off|nc|ambient> [--level N] [--voice on|off] [--auto on|off] [--sens standard|high|low]`.
+- Dev CLI: `--get nc`, `--set nc <off|nc|ambient> [--level N] [--voice on|off] [--auto on|off] [--sens standard|high|low] [--asm on|off]`.
 - Allowlist: GET `66 19`; SET `68 19` + 7 validated bytes (each field within its enum, level 1..20). The guard's exact-match rows (see the shortcut note in `src/mdr/guard.rs`) need a small per-row validator for SETs; the first SET feature PR to land adds it, later PRs reuse it. `64` stays denied.
 - **Dropped for XM6:** the 0x6B/`17` and 0x67/`22` variants and their allowlist rows (functions not advertised); the 0x6B/0x6D conflict does not exist on XM6. The NC/AMB button read (`66 30`, function 0x69) is not captured and not part of this task.
 

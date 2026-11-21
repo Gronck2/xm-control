@@ -79,7 +79,7 @@ fn on_off(v: &str) -> Result<bool, String> {
     }
 }
 
-/// `<off|nc|ambient> [--level N] [--voice on|off] [--auto on|off] [--sens standard|high|low]`, applied to `v`.
+/// `<off|nc|ambient> [--level N] [--voice on|off] [--auto on|off] [--sens standard|high|low] [--asm on|off]`, applied to `v`.
 fn apply(mut v: NcAsm, text: &str) -> Result<NcAsm, String> {
     let mut t = text.split_whitespace();
     v.set_mode(match t.next() {
@@ -94,6 +94,7 @@ fn apply(mut v: NcAsm, text: &str) -> Result<NcAsm, String> {
             "--level" => v.level = val.parse().ok().filter(|l| (1..=20).contains(l)).ok_or("level must be 1..20")?,
             "--voice" => v.voice = on_off(val)?,
             "--auto" => v.auto = on_off(val)?,
+            "--asm" => v.asm = on_off(val)?,
             "--sens" => v.sens = ["standard", "high", "low"].iter().position(|s| *s == val).ok_or("sens must be standard, high or low")? as u8,
             _ => return Err(format!("unknown option {flag:?}")),
         }

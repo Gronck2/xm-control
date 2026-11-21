@@ -267,12 +267,14 @@ fn mode_text(m: Mode) -> &'static str {
     }
 }
 
-/// `<mode> --level L --voice on|off --auto on|off --sens standard|high|low`, plus ` --changing` for a drag step.
-fn nc_text(n: &NcAsm, changing: bool) -> String {
+/// `<mode> --level L --voice on|off --auto on|off --sens standard|high|low`, plus ` --asm on|off` for Off (which has no mode to name it)
+/// and ` --changing` for a drag step. `None` for an out-of-range sensitivity: that is never sent.
+fn nc_text(n: &NcAsm, changing: bool) -> Option<String> {
     let on = |b| if b { "on" } else { "off" };
-    let sens = SENS[usize::from(n.sens).min(2)];
+    let sens = SENS.get(usize::from(n.sens))?;
+    let asm = if n.mode() == Mode::Off { format!(" --asm {}", on(n.asm)) } else { String::new() };
     let tail = if changing { " --changing" } else { "" };
-    format!("{} --level {} --voice {} --auto {} --sens {sens}{tail}", mode_text(n.mode()), n.level, on(n.voice), on(n.auto))
+    Some(format!("{} --level {} --voice {} --auto {} --sens {sens}{asm}{tail}", mode_text(n.mode()), n.level, on(n.voice), on(n.auto)))
 }
 
 /// CUSTOM and the user slots (the XM6 accepts 0xA0..=0xA5).
@@ -337,9 +339,10 @@ impl Model {
     fn nc_intent(&mut self, change: impl FnOnce(&mut NcAsm)) -> Option<Command> {
         let mut n = self.nc_base()?;
         change(&mut n);
+        let text = nc_text(&n, false)?;
         self.nc_pending = Some(n);
         self.settle();
-        Self::set("nc", nc_text(&n, false))
+        Self::set("nc", text)
     }
 
     pub fn nc_mode(&mut self, m: Mode) -> Option<Command> {
@@ -365,7 +368,16 @@ impl Model {
         (self.nc_pending, self.level_held) = (Some(n), true);
         self.settle();
         self.drag.update(now, &n)?;
-        Self::set("nc", nc_text(&n, true))
+        Self::set("nc", nc_text(&n, true)?)
+    }
+
+    /// The timer while the slider is held: sends the value a too-recent move left behind.
+    pub fn nc_drag_poll(&mut self, now: Instant) -> Option<Command> {
+        if !self.level_held {
+            return None;
+        }
+        self.drag.poll(now)?;
+        Self::set("nc", nc_text(&self.nc_pending?, true)?)
     }
 
     /// The ambient slider was let go at `level`: the final CHANGED SET, always sent.
@@ -734,6 +746,35 @@ mod tests {
     }
 
     #[test]
+    fn a_skipped_drag_value_is_sent_by_the_poll_while_held() {
+        let mut m = with(sound_state());
+        let t0 = Instant::now();
+        assert!(m.nc_level_moved(11, t0).is_some());
+        assert!(m.nc_level_moved(12, t0 + Duration::from_millis(30)).is_none());
+        assert!(m.nc_drag_poll(t0 + Duration::from_millis(50)).is_none());
+        assert_eq!(cmd(m.nc_drag_poll(t0 + Duration::from_millis(100))).1, "ambient --level 12 --voice off --auto off --sens standard --changing");
+        assert!(m.nc_drag_poll(t0 + Duration::from_millis(250)).is_none());
+        // not held: nothing
+        assert!(with(sound_state()).nc_drag_poll(t0).is_none());
+    }
+
+    #[test]
+    fn off_names_the_predicted_asm_and_a_bad_sens_is_never_sent() {
+        use crate::device::FEATURES;
+        let mut m = with(sound_state()); // ambient: asm on
+        let (_, text) = cmd(m.nc_mode(Mode::Off));
+        assert!(text.contains("--asm on"), "{text}");
+        let mut stored = sound_state();
+        stored.nc.as_mut().unwrap().asm = false;
+        let f = FEATURES.iter().find(|f| f.name() == "nc").unwrap();
+        assert_eq!(f.encode_set(&stored, &text).unwrap().1[4], 1);
+        let mut st = sound_state();
+        st.nc.as_mut().unwrap().sens = 5;
+        let mut m = with(st);
+        assert!(m.nc_toggle_voice().is_none() && m.nc_mode(Mode::Nc).is_none() && m.nc_pending.is_none());
+    }
+
+    #[test]
     fn unanswered_edits_expire_and_equal_releases_clear_at_once() {
         // the headset already reports 13 (it answered an UNDER_CHANGING): the final SET still goes out
         let mut st = sound_state();
@@ -905,6 +946,7 @@ mod tests {
         let mut off = sound_state();
         off.nc = Some(NcAsm { effect: false, asm: false, voice: false, level: 10, auto: false, sens: 0 });
         cmds.push(with(off).nc_mode(Mode::Ambient));
+        cmds.push(one(&|m| m.nc_mode(Mode::Off)));
         assert!(cmds.iter().all(Option::is_some));
         for c in cmds.into_iter().flatten() {
             let Command::Set { feature, value } = c else { panic!("{c:?}") };

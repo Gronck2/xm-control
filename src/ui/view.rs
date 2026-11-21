@@ -430,6 +430,8 @@ impl App {
         {
             self.on_scroll(TB_ENDTRACK, s);
         }
+        let c = self.model.nc_drag_poll(now);
+        self.send(c);
         if self.model.expire(now) {
             self.render();
         }
