@@ -70,7 +70,7 @@ const ALLOW: &[(Table, &[u8], Kind)] = &[
     (Table::T1, &[0x06, 0x00], Kind::Get), // CONNECT_GET_SUPPORT_FUNCTION
     (Table::T2, &[0x06, 0x00], Kind::Get), // Table 2 support functions
     // read-only feature GETs issued by --probe (src/probe.rs)
-    (Table::T1, &[0x22, 0x00], Kind::Get), // battery level
+    (Table::T1, &[0x22, 0x00], Kind::Get), // battery level (feature row, src/device/battery.rs)
     (Table::T1, &[0x22, 0x08], Kind::Get), // battery level with threshold
     (Table::T1, &[0x66, 0x19], Kind::Get), // NC/ASM noise adaptation
     (Table::T1, &[0x66, 0x17], Kind::Get), // NC/ASM

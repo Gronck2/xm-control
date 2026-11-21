@@ -2,6 +2,7 @@
 //! turns incoming RET/NTFY frames into `DeviceState` updates and reports everything as `Event`s. UI-neutral: the UI reads events from the
 //! receiver (the optional wake callback says "something is waiting", e.g. to post a window message).
 
+pub mod battery;
 pub mod feature;
 pub mod handshake;
 #[cfg(test)]
@@ -16,14 +17,16 @@ use feature::{Feature, Get, Parsed, supported};
 use handshake::{DeviceInfo, handshake};
 use state::DeviceState;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// All features, in sync order. Feature tasks add one line each.
-pub static FEATURES: &[&dyn Feature] = &[];
+pub static FEATURES: &[&dyn Feature] = &[&battery::BatteryFeature];
 
 /// How long the worker waits for incoming frames between checks of the command channel.
 /// shortcut: a command can wait up to this long before it is sent; fine for button-driven UIs, use a wakeable transport read if it ever matters.
 const POLL: Duration = Duration::from_millis(50);
+/// Fallback re-read interval for features that ask for it (`Feature::wants_refresh`).
+const REFRESH: Duration = Duration::from_secs(60);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub type Wake = Box<dyn Fn() + Send>;
@@ -85,7 +88,7 @@ impl DeviceHandle {
             let uuid = parse_guid(MDR_V2_UUID).expect("constant UUID is valid");
             WinsockRfcomm::connect(mac, uuid, CONNECT_TIMEOUT).map_err(|e| format!("connect failed: {e}"))
         };
-        Self::spawn(open, FEATURES, Timeouts::default(), wake)
+        Self::spawn(open, FEATURES, Timeouts::default(), REFRESH, wake)
     }
 
     /// `open` runs on the worker thread, so the transport itself need not be `Send` and a slow connect does not block the caller.
@@ -93,12 +96,13 @@ impl DeviceHandle {
         open: impl FnOnce() -> Result<T, String> + Send + 'static,
         features: &'static [&'static dyn Feature],
         timeouts: Timeouts,
+        refresh: Duration,
         wake: Option<Wake>,
     ) -> (Self, Receiver<Event>) {
         let (commands, command_rx) = mpsc::channel();
         let (event_tx, events) = mpsc::channel();
         std::thread::spawn(move || {
-            let mut w = Worker { features, events: event_tx, wake, state: DeviceState::default() };
+            let mut w = Worker { features, events: event_tx, wake, refresh, state: DeviceState::default() };
             let reason = match w.run(open, timeouts, command_rx) {
                 Err(Stop::Lost(reason)) => reason,
                 Err(Stop::Gone) => return,
@@ -152,6 +156,7 @@ struct Worker {
     features: &'static [&'static dyn Feature],
     events: Sender<Event>,
     wake: Option<Wake>,
+    refresh: Duration,
     state: DeviceState,
 }
 
@@ -181,7 +186,19 @@ impl Worker {
             }
         }
         self.emit(Event::Synced(self.state.clone()))?;
+        let mut last = Instant::now();
         loop {
+            if last.elapsed() >= self.refresh {
+                last = Instant::now();
+                let features = self.features;
+                let due: Vec<_> = features.iter().filter(|f| supported(**f, &info) && f.wants_refresh(&self.state)).collect();
+                for f in due {
+                    for g in f.initial_gets(&info) {
+                        let r = self.fetch(s, &g);
+                        self.finish(r)?;
+                    }
+                }
+            }
             match commands.try_recv() {
                 Ok(c) => {
                     let r = self.execute(s, &info, c);
@@ -345,7 +362,7 @@ mod tests {
 
     fn start(h: FakeHeadset) -> (DeviceHandle, Receiver<Event>, Writes) {
         let writes = h.writes.clone();
-        let (handle, rx) = DeviceHandle::spawn(move || Ok(h), TEST_FEATURES, FAST, None);
+        let (handle, rx) = DeviceHandle::spawn(move || Ok(h), TEST_FEATURES, FAST, REFRESH, None);
         (handle, rx, writes)
     }
 
@@ -472,7 +489,7 @@ mod tests {
 
     #[test]
     fn failed_connect_is_a_disconnect() {
-        let (_h, rx) = DeviceHandle::spawn(|| Err::<FakeHeadset, _>("no such device".to_string()), TEST_FEATURES, FAST, None);
+        let (_h, rx) = DeviceHandle::spawn(|| Err::<FakeHeadset, _>("no such device".to_string()), TEST_FEATURES, FAST, REFRESH, None);
         assert!(matches!(next(&rx), Event::Disconnected(r) if r == "no such device"));
     }
 }
