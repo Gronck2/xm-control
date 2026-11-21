@@ -28,7 +28,7 @@ impl std::fmt::Display for SessionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             SessionError::Io(e) => write!(f, "I/O error: {e}"),
-            SessionError::Frame(e) => write!(f, "bad frame from the headset: {e}"),
+            SessionError::Frame(e) => write!(f, "could not build the command: {e}"),
             SessionError::Timeout => write!(f, "the headset did not answer"),
             SessionError::NoReply => write!(f, "the headset acknowledged but did not reply"),
         }
