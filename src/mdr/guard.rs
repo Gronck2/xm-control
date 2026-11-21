@@ -223,6 +223,9 @@ mod tests {
         let rows: &[Row] = &[(Table::T1, &[0x58, 0x00], Kind::Set(|a| a == [1])), (Table::T1, &[0x56, 0x00], Kind::Get)];
         assert!(check_in(rows, Table::T1, &[0x58, 0x00, 1], Mode::Normal).is_ok());
         assert_eq!(check_in(rows, Table::T1, &[0x58, 0x00, 2], Mode::Normal).unwrap_err(), GuardError::NotAllowed);
+        // wrong length: too short and too long for the validator
+        assert_eq!(check_in(rows, Table::T1, &[0x58, 0x00], Mode::Normal).unwrap_err(), GuardError::NotAllowed);
+        assert_eq!(check_in(rows, Table::T1, &[0x58, 0x00, 1, 1], Mode::Normal).unwrap_err(), GuardError::NotAllowed);
         assert_eq!(check_in(rows, Table::T1, &[0x58, 0x00, 1], Mode::ReadOnly).unwrap_err(), GuardError::ReadOnly);
         assert!(check_in(rows, Table::T1, &[0x56, 0x00], Mode::ReadOnly).is_ok());
         // denylist still wins over an allowlist row
@@ -236,6 +239,12 @@ mod tests {
         for (table, payload, _) in ALLOW {
             assert!(!denied(*table, payload), "{table:?} {payload:02X?}");
             assert!(!(*table == Table::T1 && payload[0] == 0xE8));
+        }
+        // a SET row's argument bytes must not turn it into a denied command (the denylist looks at up to the third byte)
+        for (table, prefix, _) in ALLOW.iter().filter(|r| matches!(r.2, Kind::Set(_))) {
+            for b in 0..=255u8 {
+                assert!(!denied(*table, &[prefix, &[b][..]].concat()), "{table:?} {prefix:02X?} {b:02X}");
+            }
         }
     }
 }
