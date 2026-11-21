@@ -256,15 +256,21 @@ impl App {
 const WINDOW_STYLE: u32 = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    // Only these messages touch the App; others (WM_SIZE, WM_CTLCOLOR*, ... sent re-entrantly from our own calls) must not create a second `&mut App`.
-    if !matches!(msg, WM_COMMAND | WM_DEVICE_EVENT | WM_DPICHANGED | WM_CLOSE | WM_DESTROY | WM_NCDESTROY) {
+    // Only these messages touch the App. Everything else (WM_SIZE, WM_CTLCOLOR*, CBN_* notifications, ...) can arrive re-entrantly from our
+    // own calls and must not create a second `&mut App`.
+    if msg == WM_DESTROY {
+        unsafe { PostQuitMessage(0) };
+        return 0;
+    }
+    let clicked = msg == WM_COMMAND && (wparam >> 16) as u32 == BN_CLICKED;
+    if !(clicked || matches!(msg, WM_DEVICE_EVENT | WM_DPICHANGED | WM_CLOSE | WM_NCDESTROY)) {
         return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
     }
     // SAFETY: the pointer is set once in `run` to a leaked `App` and cleared in WM_NCDESTROY; only the UI thread gets here.
     let app = unsafe { (GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut App).as_mut() };
     let Some(app) = app else { return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) } };
     match msg {
-        WM_COMMAND if (wparam >> 16) as u32 == BN_CLICKED => match wparam & 0xFFFF {
+        WM_COMMAND => match wparam & 0xFFFF {
             ID_CONNECT => app.on_connect_button(),
             ID_REFRESH => app.refresh_devices(),
             ID_MAC => {
@@ -284,9 +290,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         }
         WM_CLOSE => {
             app.shutdown();
+            // `app` is dead from here: DestroyWindow re-enters with WM_NCDESTROY, which frees it.
             unsafe { DestroyWindow(hwnd) };
         }
-        WM_DESTROY => unsafe { PostQuitMessage(0) },
         WM_NCDESTROY => {
             // SAFETY: last message of the window; reclaim the leaked `App` (deleting its font) and make later messages harmless.
             unsafe {
