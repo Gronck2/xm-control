@@ -215,6 +215,42 @@ mod tests {
     }
 
     #[test]
+    fn command_error_is_a_notice_cleared_on_disconnect() {
+        use crate::device::CommandError;
+        let mut m = connecting();
+        m.apply(Event::Connected(info()));
+        m.apply(Event::Error(CommandError::NotSupported("x".into())));
+        assert!(m.view().status.contains("NotSupported"));
+        assert!(m.active());
+        m.apply(Event::Disconnected("gone".into()));
+        assert_eq!(m.view().status, "Disconnected: gone");
+    }
+
+    #[test]
+    fn late_connected_does_not_undo_disconnecting_and_reconnect_resets() {
+        let mut m = connecting();
+        m.begin_disconnect();
+        m.apply(Event::Connected(info()));
+        assert_eq!(m.view().status, "Disconnecting ...");
+        m.apply(Event::Disconnected("closed".into()));
+        m.toggle_mac();
+        let state = DeviceState { battery: Some(Battery { level: 50, charging: Charge::Charged }), ..Default::default() };
+        m.apply(Event::Synced(state));
+        m.begin_connect("Other".into(), 0x010203040506);
+        let v = m.view();
+        assert_eq!((v.battery, v.model.as_str(), v.mac.as_str()), (None, "-", "01:02:03:04:05:06")); // old state gone, MAC choice kept
+        assert_eq!(v.status, "Connecting to Other ...");
+    }
+
+    #[test]
+    fn begin_disconnect_when_idle_is_a_noop_and_charged_text() {
+        let mut m = Model::new();
+        m.begin_disconnect();
+        assert_eq!(m.view().status, "Not connected");
+        assert_eq!(battery_text(Battery { level: 100, charging: Charge::Charged }), "100% (charged)");
+    }
+
+    #[test]
     fn connect_failure_is_reported() {
         let mut m = connecting();
         m.apply(Event::Disconnected("connect failed: timed out".into()));
