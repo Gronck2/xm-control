@@ -136,7 +136,7 @@ fn device_cli(args: &[String], device: Option<&str>) -> Result<(), String> {
             Ok(e) => println!("{e:?}"),
             Err(RecvTimeoutError::Timeout) if until.is_some() => return Ok(()),
             Err(RecvTimeoutError::Timeout) => return Err("no answer from the headset".into()),
-            Err(RecvTimeoutError::Disconnected) => return Ok(()),
+            Err(RecvTimeoutError::Disconnected) => return Err("device worker ended unexpectedly".into()),
         }
     }
 }

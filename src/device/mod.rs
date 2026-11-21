@@ -70,7 +70,9 @@ pub enum Event {
     Disconnected(String),
 }
 
-/// The UI side. Dropping it stops the worker (the thread ends within about `POLL`; it is not joined).
+/// The UI side. Dropping it stops the worker, but only once the current handshake, initial sync or command finishes (can take
+/// seconds), then within about `POLL`; the thread is not joined and the RFCOMM socket stays open until then. A UI must wait
+/// for the event channel to close before reconnecting.
 pub struct DeviceHandle {
     commands: Sender<Command>,
 }
