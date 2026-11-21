@@ -597,23 +597,30 @@ impl Model {
     }
 
     pub fn stc_sens(&mut self, index: usize) -> Option<Command> {
-        let word = STC_SENS.get(index)?;
-        if usize::from(self.stc_levels()?.0) == index {
+        STC_SENS.get(index)?;
+        let (s, t) = self.stc_levels()?;
+        if usize::from(s) == index {
             return None;
         }
-        self.stc_pending.sensitivity = Some(index as u8);
-        self.settle();
-        Self::set("stc", format!("sens {word}"))
+        self.stc_set_levels(index as u8, t)
     }
 
     pub fn stc_timeout(&mut self, index: usize) -> Option<Command> {
-        let word = STC_TIMEOUT.get(index)?;
-        if usize::from(self.stc_levels()?.1) == index {
+        STC_TIMEOUT.get(index)?;
+        let (s, t) = self.stc_levels()?;
+        if usize::from(t) == index {
             return None;
         }
-        self.stc_pending.timeout = Some(index as u8);
+        self.stc_set_levels(s, index as u8)
+    }
+
+    /// Both values go in one SET so a stale worker state cannot leak into the other byte.
+    fn stc_set_levels(&mut self, s: u8, t: u8) -> Option<Command> {
+        let (sw, tw) = (STC_SENS.get(usize::from(s))?, STC_TIMEOUT.get(usize::from(t))?);
+        self.stc_pending.sensitivity = Some(s);
+        self.stc_pending.timeout = Some(t);
         self.settle();
-        Self::set("stc", format!("timeout {word}"))
+        Self::set("stc", format!("levels {sw} {tw}"))
     }
 
     /// The (sensitivity, timeout) the UI expects; `None` unless both are known (the headset needs both in one SET).
@@ -1212,8 +1219,8 @@ mod tests {
         let mut m = with(system_state());
         assert_eq!(cmd(m.stc_toggle()), ("stc".into(), "on".into()));
         assert_eq!(cmd(m.stc_toggle()).1, "off"); // a quick second click goes from the prediction
-        assert_eq!(cmd(m.stc_sens(1)).1, "sens high");
-        assert_eq!(cmd(m.stc_timeout(3)).1, "timeout none");
+        assert_eq!(cmd(m.stc_sens(1)).1, "levels high mid"); // both values, the other one from the state
+        assert_eq!(cmd(m.stc_timeout(3)).1, "levels high none");
         assert!(m.stc_sens(1).is_none() && m.stc_timeout(3).is_none() && m.stc_sens(3).is_none() && m.stc_timeout(4).is_none());
         assert_eq!(m.view().system.stc.levels, Some((1, 3)));
         assert_eq!(cmd(m.power_select(0)), ("poweroff".into(), "removed".into()));
