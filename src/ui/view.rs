@@ -2,8 +2,10 @@
 //! It draws `ViewState` from `model` and forwards clicks; the device worker lives in its own thread and wakes the window with a private message,
 //! so the UI thread never waits on Bluetooth (the one exception: the paired-device list is read synchronously, it is a local registry-backed query).
 
-use super::model::Model;
+use super::model::{Model, SoundView};
 use crate::bt::enumerate::{Device, paired_devices};
+use crate::device::Command;
+use crate::device::ncasm::Mode;
 use crate::device::{DeviceHandle, Event};
 use std::ptr::{null, null_mut};
 use std::sync::mpsc::{Receiver, TryRecvError};
@@ -11,6 +13,9 @@ use std::time::{Duration, Instant};
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::*;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows_sys::Win32::UI::Controls::{
+    ICC_BAR_CLASSES, INITCOMMONCONTROLSEX, InitCommonControlsEx, TB_ENDTRACK, TBM_SETPOS, TBM_SETRANGE, TBS_AUTOTICKS, TBS_NOTICKS, TBS_VERT,
+};
 use windows_sys::Win32::UI::HiDpi::{AdjustWindowRectExForDpi, GetDpiForWindow};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
@@ -23,7 +28,17 @@ const CLOSE_WAIT: Duration = Duration::from_millis(1500);
 const ID_REFRESH: usize = 102;
 const ID_CONNECT: usize = 103;
 const ID_MAC: usize = 104;
-const CLIENT: (i32, i32) = (420, 338);
+const ID_NC_MODE: usize = 110; // 110..=112: Off, Noise cancelling, Ambient
+const ID_VOICE: usize = 113;
+const ID_AUTO: usize = 114;
+const ID_SENS: usize = 115;
+const ID_EQ_PRESET: usize = 116;
+const ID_DSEE: usize = 117;
+/// `TBM_GETPOS` is `WM_USER`.
+const TBM_GETPOS: u32 = WM_USER;
+/// Static text style "centered" (not in windows-sys).
+const SS_CENTER: u32 = 1;
+const CLIENT: (i32, i32) = (420, 618);
 
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
@@ -49,6 +64,21 @@ struct App {
     mac_button: HWND,
     battery_label: HWND,
     battery_value: HWND,
+    nc_ctrls: Vec<HWND>,
+    nc_radios: [HWND; 3],
+    level_slider: HWND,
+    level_value: HWND,
+    voice: HWND,
+    auto: HWND,
+    sens: HWND,
+    eq_ctrls: Vec<HWND>,
+    eq_preset: HWND,
+    eq_sliders: [HWND; 10],
+    eq_db: [HWND; 10],
+    eq_freq: [HWND; 10],
+    /// The preset names now in the combo, so it is refilled only when they change.
+    eq_names: Vec<String>,
+    dsee: HWND,
 }
 
 impl App {
@@ -79,9 +109,40 @@ impl App {
         let mac_button = add("BUTTON", "Show", button, ID_MAC, [320, 147, 70, 22]);
         let battery_label = add("STATIC", "Battery", 0, 0, [24, 172, 70, 18]);
         let battery_value = add("STATIC", "", 0, 0, [100, 172, 290, 18]);
-        // Empty sections for the feature panels (tasks 0013 and 0014).
-        add("BUTTON", "Sound", BS_GROUPBOX as u32, 0, [12, 206, 396, 56]);
-        add("BUTTON", "Controls", BS_GROUPBOX as u32, 0, [12, 270, 396, 56]);
+        add("BUTTON", "Sound", BS_GROUPBOX as u32, 0, [12, 206, 396, 336]);
+        // noise control; `nc_ctrls` and `eq_ctrls` are hidden together when the headset does not advertise the feature
+        let radio = BS_AUTORADIOBUTTON as u32 | tab;
+        let check = BS_AUTOCHECKBOX as u32 | tab;
+        let mut nc_ctrls = vec![
+            add("BUTTON", "Off", radio | WS_GROUP, ID_NC_MODE, [24, 228, 56, 20]),
+            add("BUTTON", "Noise cancelling", radio, ID_NC_MODE + 1, [84, 228, 120, 20]),
+            add("BUTTON", "Ambient", radio, ID_NC_MODE + 2, [210, 228, 80, 20]),
+            add("STATIC", "Ambient level", 0, 0, [24, 258, 86, 18]),
+        ];
+        let nc_radios = [nc_ctrls[0], nc_ctrls[1], nc_ctrls[2]];
+        let level_slider = add("msctls_trackbar32", "", TBS_AUTOTICKS | tab, 0, [112, 252, 246, 28]);
+        let level_value = add("STATIC", "", 0, 0, [364, 258, 32, 18]);
+        let voice = add("BUTTON", "Focus on voice", check, ID_VOICE, [24, 284, 150, 20]);
+        let auto = add("BUTTON", "Auto ambient", check, ID_AUTO, [180, 284, 150, 20]);
+        let sens_label = add("STATIC", "Adaptive sensitivity", 0, 0, [24, 314, 110, 18]);
+        let sens = add("COMBOBOX", "", CBS_DROPDOWNLIST as u32 | tab, ID_SENS, [140, 310, 150, 100]);
+        nc_ctrls.extend([level_slider, level_value, voice, auto, sens_label, sens]);
+        // equalizer
+        let mut eq_ctrls = vec![add("STATIC", "Equalizer", 0, 0, [24, 346, 70, 18])];
+        let eq_preset = add("COMBOBOX", "", CBS_DROPDOWNLIST as u32 | WS_VSCROLL | tab, ID_EQ_PRESET, [100, 342, 170, 200]);
+        eq_ctrls.push(eq_preset);
+        let mut eq_sliders = [null_mut(); 10];
+        let mut eq_db = [null_mut(); 10];
+        let mut eq_freq = [null_mut(); 10];
+        for i in 0..10 {
+            let x = 24 + i as i32 * 37;
+            eq_sliders[i] = add("msctls_trackbar32", "", TBS_VERT | TBS_NOTICKS | tab, 0, [x, 370, 36, 96]);
+            eq_db[i] = add("STATIC", "", SS_CENTER, 0, [x, 468, 36, 16]);
+            eq_freq[i] = add("STATIC", "", SS_CENTER, 0, [x, 484, 36, 16]);
+            eq_ctrls.extend([eq_sliders[i], eq_db[i], eq_freq[i]]);
+        }
+        let dsee = add("BUTTON", "DSEE (auto)", check, ID_DSEE, [24, 510, 250, 20]);
+        add("BUTTON", "Controls", BS_GROUPBOX as u32, 0, [12, 550, 396, 56]); // task 0014
         let mut app = App {
             hwnd,
             model: Model::new(),
@@ -102,7 +163,31 @@ impl App {
             mac_button,
             battery_label,
             battery_value,
+            nc_ctrls,
+            nc_radios,
+            level_slider,
+            level_value,
+            voice,
+            auto,
+            sens,
+            eq_ctrls,
+            eq_preset,
+            eq_sliders,
+            eq_db,
+            eq_freq,
+            eq_names: Vec::new(),
+            dsee,
         };
+        // SAFETY: live controls; the strings outlive the calls. None of these messages notifies the parent (TBM_SETRANGE, CB_ADDSTRING).
+        unsafe {
+            SendMessageW(app.level_slider, TBM_SETRANGE, 1, (20 << 16) | 1);
+            for s in app.eq_sliders {
+                SendMessageW(s, TBM_SETRANGE, 1, 12 << 16);
+            }
+            for n in ["Standard", "High", "Low"] {
+                SendMessageW(app.sens, CB_ADDSTRING, 0, wide(n).as_ptr() as LPARAM);
+            }
+        }
         app.refresh_devices();
         app.relayout();
         app.fit_window();
@@ -174,7 +259,7 @@ impl App {
         }
     }
 
-    fn render(&self) {
+    fn render(&mut self) {
         let v = self.model.view();
         let set = |h: HWND, s: &str| {
             // SAFETY: `h` is a live control, the string is NUL-terminated.
@@ -196,6 +281,115 @@ impl App {
             ShowWindow(self.battery_label, show);
             ShowWindow(self.battery_value, show);
         }
+        self.render_sound(&v.sound);
+    }
+
+    /// Draws the sound panels. Every message sent here (BM_SETCHECK, CB_SETCURSEL, TBM_SETPOS, CB_*STRING) is silent: none of them notifies the
+    /// parent, so drawing a headset value can never look like a user gesture.
+    fn render_sound(&mut self, s: &SoundView) {
+        let text = |h: HWND, t: &str| {
+            // SAFETY: `h` is a live control, the string is NUL-terminated.
+            unsafe { SetWindowTextW(h, wide(t).as_ptr()) };
+        };
+        let show = |hs: &[HWND], on: bool| {
+            for &h in hs {
+                // SAFETY: live controls.
+                unsafe { ShowWindow(h, if on { SW_SHOW } else { SW_HIDE }) };
+            }
+        };
+        let send = |h: HWND, m: u32, w: WPARAM, l: LPARAM| {
+            // SAFETY: `h` is a live control; every call here passes plain values or a string that outlives it.
+            unsafe { SendMessageW(h, m, w, l) };
+        };
+        let enable = |h: HWND, on: bool| {
+            // SAFETY: live control.
+            unsafe { EnableWindow(h, on as i32) };
+        };
+        show(&self.nc_ctrls, s.nc.is_some());
+        if let Some(n) = &s.nc {
+            for (r, m) in self.nc_radios.iter().zip([Mode::Off, Mode::Nc, Mode::Ambient]) {
+                send(*r, BM_SETCHECK, (n.mode == m) as WPARAM, 0);
+            }
+            send(self.level_slider, TBM_SETPOS, 1, n.level as LPARAM);
+            text(self.level_value, &n.level.to_string());
+            send(self.voice, BM_SETCHECK, n.voice as WPARAM, 0);
+            send(self.auto, BM_SETCHECK, n.auto as WPARAM, 0);
+            send(self.sens, CB_SETCURSEL, n.sens as WPARAM, 0);
+            for h in [self.level_slider, self.level_value, self.voice] {
+                enable(h, n.ambient_enabled);
+            }
+        }
+        show(&self.eq_ctrls, s.eq.is_some());
+        if let Some(e) = &s.eq {
+            if self.eq_names != e.presets {
+                send(self.eq_preset, CB_RESETCONTENT, 0, 0);
+                for n in &e.presets {
+                    send(self.eq_preset, CB_ADDSTRING, 0, wide(n).as_ptr() as LPARAM);
+                }
+                self.eq_names = e.presets.clone();
+            }
+            send(self.eq_preset, CB_SETCURSEL, e.selected.unwrap_or(usize::MAX), 0); // usize::MAX = -1: no selection
+            enable(self.eq_preset, e.enabled);
+            for (i, (&slider, &db_label)) in self.eq_sliders.iter().zip(&self.eq_db).enumerate() {
+                let db = e.bands.get(i).copied().unwrap_or(0);
+                send(slider, TBM_SETPOS, 1, (6 - db) as LPARAM); // vertical: the top is the minimum, so +6 dB = position 0
+                text(db_label, &format!("{db:+}"));
+                enable(slider, e.sliders_enabled);
+                text(self.eq_freq[i], e.labels.get(i).map_or("", String::as_str));
+            }
+        }
+        show(&[self.dsee], s.dsee.is_some());
+        if let Some(d) = &s.dsee {
+            send(self.dsee, BM_SETCHECK, d.auto as WPARAM, 0);
+            enable(self.dsee, d.enabled);
+        }
+    }
+
+    fn send(&self, command: Option<Command>) {
+        if let (Some(c), Some(h)) = (command, &self.handle) {
+            // an error means the worker ended; its Disconnected event follows
+            let _ = h.send(c);
+        }
+    }
+
+    /// A user gesture on a button, checkbox or dropdown of the sound panels.
+    fn on_sound_command(&mut self, id: usize) {
+        let c = match id {
+            ID_NC_MODE..=112 => self.model.nc_mode([Mode::Off, Mode::Nc, Mode::Ambient][id - ID_NC_MODE]),
+            ID_VOICE => self.model.nc_toggle_voice(),
+            ID_AUTO => self.model.nc_toggle_auto(),
+            ID_DSEE => self.model.toggle_dsee(),
+            ID_SENS => self.model.nc_sens(self.selection(self.sens)),
+            ID_EQ_PRESET => self.model.eq_select_preset(self.selection(self.eq_preset)),
+            _ => return,
+        };
+        self.send(c);
+        self.render(); // puts the control back to the headset's value until the headset confirms
+    }
+
+    fn selection(&self, combo: HWND) -> usize {
+        // SAFETY: live combo box; CB_ERR (-1) becomes usize::MAX, which no intent accepts.
+        unsafe { SendMessageW(combo, CB_GETCURSEL, 0, 0) as usize }
+    }
+
+    /// A trackbar notification (WM_HSCROLL / WM_VSCROLL): only the ambient-level and EQ sliders exist.
+    fn on_scroll(&mut self, code: u32, slider: HWND) {
+        // SAFETY: `slider` is the control handle the notification came with.
+        let pos = unsafe { SendMessageW(slider, TBM_GETPOS, 0, 0) } as i32;
+        let end = code == TB_ENDTRACK;
+        if slider == self.level_slider {
+            let c = if end { self.model.nc_level_released(pos as u8) } else { self.model.nc_level_moved(pos as u8, Instant::now()) };
+            self.send(c);
+        } else if let Some(i) = self.eq_sliders.iter().position(|&s| s == slider) {
+            let db = (6 - pos) as i16;
+            if end {
+                let c = self.model.eq_band_released(i, db);
+                self.send(c);
+            } else {
+                self.model.eq_band_moved(i, db);
+            }
+        }
+        self.render();
     }
 
     fn on_connect_button(&mut self) {
@@ -256,14 +450,15 @@ impl App {
 const WINDOW_STYLE: u32 = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    // Only these messages touch the App. Everything else (WM_SIZE, WM_CTLCOLOR*, CBN_* notifications, ...) can arrive re-entrantly from our
-    // own calls and must not create a second `&mut App`.
+    // Only these messages touch the App: user gestures (BN_CLICKED, CBN_SELCHANGE, trackbar WM_HSCROLL/WM_VSCROLL) and our own posts. Everything else
+    // (WM_SIZE, WM_CTLCOLOR*, other notifications, ...) can arrive re-entrantly from our own calls and must not create a second `&mut App`. The render calls
+    // are silent by design: TBM_SETPOS, BM_SETCHECK and CB_SETCURSEL send no WM_HSCROLL, BN_CLICKED or CBN_SELCHANGE, so a headset value never loops back.
     if msg == WM_DESTROY {
         unsafe { PostQuitMessage(0) };
         return 0;
     }
-    let clicked = msg == WM_COMMAND && (wparam >> 16) as u32 == BN_CLICKED;
-    if !(clicked || matches!(msg, WM_DEVICE_EVENT | WM_DPICHANGED | WM_CLOSE | WM_NCDESTROY)) {
+    let gesture = msg == WM_COMMAND && matches!((wparam >> 16) as u32, BN_CLICKED | CBN_SELCHANGE);
+    if !(gesture || matches!(msg, WM_HSCROLL | WM_VSCROLL | WM_DEVICE_EVENT | WM_DPICHANGED | WM_CLOSE | WM_NCDESTROY)) {
         return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
     }
     // SAFETY: the pointer is set once in `run` to a leaked `App` and cleared in WM_NCDESTROY; only the UI thread gets here.
@@ -277,8 +472,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 app.model.toggle_mac();
                 app.render();
             }
-            _ => {}
+            id => app.on_sound_command(id),
         },
+        WM_HSCROLL | WM_VSCROLL => app.on_scroll((wparam & 0xFFFF) as u32, lparam as HWND),
         WM_DEVICE_EVENT => app.pump(),
         WM_DPICHANGED => {
             // SAFETY: for WM_DPICHANGED lparam points to the suggested RECT.
@@ -311,6 +507,8 @@ pub fn run() -> Result<(), String> {
     let class = wide("XmControlWindow");
     // SAFETY: standard window-class registration and creation; all pointers are valid for the calls.
     unsafe {
+        // the trackbar class lives in comctl32
+        InitCommonControlsEx(&INITCOMMONCONTROLSEX { dwSize: size_of::<INITCOMMONCONTROLSEX>() as u32, dwICC: ICC_BAR_CLASSES });
         let instance = GetModuleHandleW(null());
         let wc = WNDCLASSW {
             lpfnWndProc: Some(wndproc),
