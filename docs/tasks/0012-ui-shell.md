@@ -7,7 +7,7 @@ An ordinary Windows settings window (no tray) that lets the user pick a paired h
 First user-visible app; also where the UI stack is fixed.
 
 ## Blocked by
-**An ADR for the UI stack (owner decision; the ADR is written by the main thread after the owner decides, not by this task).** Candidates: Win32 + Direct2D without a framework, or egui/eframe. Depends on 0004 (core API). Does not block 0001-0011.
+**UI stack: Win32 with native common controls, decided in ADR 0002.** Candidates: Win32 + Direct2D without a framework, or egui/eframe. Depends on 0004 (core API). Does not block 0001-0011.
 
 ## Scope
 - Window with: device picker (paired devices from 0002) + Connect/Disconnect, status line (connecting / connected / disconnected + reason / error), info panel (model name, firmware version read-only, MAC), empty areas for the feature panels.

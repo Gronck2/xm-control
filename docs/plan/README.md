@@ -31,3 +31,12 @@ Protocol facts come from `docs/arch/protocol.md` (study of mos9527/SonyHeadphone
 - Notifications (button presses on the headset, other device changes) arrive unsolicited as NTFY frames; they must update the state and the UI (0004 builds the path, features hook in).
 - The agent cannot see or hear the headphones: every "(b) owner verifies" item is a manual checklist the owner runs and reports.
 - Update `docs/arch/overview.md` in the PR that changes the shape of the system.
+
+## Owner decisions (2026-11-21)
+
+- UI stack: Win32 with native common controls (`windows-sys`), see ADR 0002.
+- EQ: no Clear Bass on XM6 accepted; 10 bands −6..+6 plus presets. EQ sliders send on release.
+- DSEE: dropped from the MVP if the probe shows 0xE2 is not advertised.
+- Multipoint toggle only after a confirmation dialog.
+- Probe file: MAC redacted by default; a reviewed, anonymised probe dump may be committed as test data.
+- No auto-reconnect in the MVP: a "Connect" button. Battery polled every 60 s only when the headset sends no notifications.
