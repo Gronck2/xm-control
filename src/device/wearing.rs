@@ -165,6 +165,30 @@ mod tests {
     }
 
     #[test]
+    fn ntfy_updates_state_with_one_event() {
+        let mut h = FakeHeadset::from_xm6_capture();
+        // the headset answers the GET with a NTFY `F5 00 04` (both off) instead of `F3 00 ..`
+        h.replies.retain(|r| !(r.0 == TYPE_T2 && r.1 == [0xF2, 0x00]));
+        h.replies.push((TYPE_T2, vec![0xF2, 0x00], vec![0xF5, 0x00, 0x04]));
+        let (_handle, rx) = start(h);
+        let mut changed = 0;
+        loop {
+            match next(&rx) {
+                Event::StateChanged { state, .. } => {
+                    changed += 1;
+                    assert_eq!(state.wearing, Some(Wearing::BothNotWear));
+                }
+                Event::Synced(s) => {
+                    assert_eq!(s.wearing, Some(Wearing::BothNotWear));
+                    break;
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(changed, 1);
+    }
+
+    #[test]
     fn not_advertised_sends_nothing() {
         let h = FakeHeadset::xm6(&[0x20], &[], true);
         let writes = h.writes.clone();
