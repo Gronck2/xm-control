@@ -365,6 +365,32 @@ mod tests {
     }
 
     #[test]
+    fn guard_eq_rows_exhaustive_and_loose_frames_never_make_a_bad_set() {
+        let ok = |p: &[u8]| check(Table::T1, p, GMode::Normal).is_ok();
+        for id in 0..=255u8 {
+            let valid = EQ_PRESETS.contains(&id);
+            assert_eq!(ok(&[0x58, 0x00, id, 0x00]), valid, "preset-only {id:#04X}");
+            assert_eq!(ok(&[0x58, 0x00, id, 0x0A, 0, 1, 2, 3, 4, 5, 6, 7, 8, 12]), valid, "full {id:#04X}");
+        }
+        for step in 0..=255u8 {
+            for pos in [4, 13] {
+                let mut p = vec![0x58, 0x00, 0xA0, 0x0A, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6];
+                p[pos] = step;
+                assert_eq!(ok(&p), step <= 12, "step {step} at {pos}");
+            }
+        }
+        // a loose device frame (unlisted preset, wild raw values) never turns into a SET the guard would refuse
+        let mut s = state();
+        s.eq = parse_eq(&[0xA3, 10, 255, 0, 13, 0, 0, 0, 0, 0, 0, 99]).ok();
+        assert!(s.eq.is_some());
+        assert!(EqFeature.encode_set(&s, "bands 0 0 0 0 0 0 0 0 0 0").is_err()); // 0xA3 is not in the headset's list
+        s.eq.as_mut().unwrap().preset = 0x01;
+        let (_, p) = EqFeature.encode_set(&s, "bands 1 1 1 1 1 1 1 1 1 1").unwrap();
+        assert_eq!(p[2], 0xA0);
+        assert!(ok(&p));
+    }
+
+    #[test]
     fn sync_on_the_capture_gating_and_no_status_read() {
         let h = headset();
         let writes = h.writes.clone();
