@@ -625,6 +625,28 @@ mod tests {
         assert_eq!(m.view().sound.eq.unwrap().bands[0], 0);
     }
 
+    /// Every command the model emits must encode and pass the guard in normal mode.
+    #[test]
+    fn every_emitted_command_encodes_and_passes_the_guard() {
+        use crate::device::FEATURES;
+        use crate::mdr::guard::{Mode as GMode, check};
+        let mut m = with(sound_state());
+        let t0 = Instant::now();
+        let mut cmds = vec![m.nc_mode(Mode::Nc), m.nc_toggle_voice(), m.nc_toggle_auto(), m.nc_sens(1), m.nc_sens(2), m.nc_level_moved(11, t0)];
+        cmds.extend([m.nc_level_released(1), m.nc_level_released(20), m.eq_select_preset(0), m.eq_select_preset(1)]);
+        cmds.extend([m.eq_band_released(0, -6), m.eq_band_released(9, 6), m.toggle_dsee()]);
+        let mut off = sound_state();
+        off.nc = Some(NcAsm { effect: false, asm: false, voice: false, level: 10, auto: false, sens: 0 });
+        cmds.push(with(off).nc_mode(Mode::Ambient));
+        assert!(cmds.iter().all(Option::is_some));
+        for c in cmds.into_iter().flatten() {
+            let Command::Set { feature, value } = c else { panic!("{c:?}") };
+            let f = FEATURES.iter().find(|f| f.name() == feature).expect("known feature");
+            let (table, payload) = f.encode_set(&sound_state(), &value).unwrap_or_else(|e| panic!("{feature} {value}: {e}"));
+            check(table, &payload, GMode::Normal).unwrap_or_else(|e| panic!("{feature} {value}: {e:?}"));
+        }
+    }
+
     #[test]
     fn frequency_labels() {
         assert_eq!([31, 500, 1000, 1500, 16000].map(freq_label), ["31", "500", "1k", "1.5k", "16k"]);
