@@ -15,7 +15,8 @@ use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::*;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Controls::{
-    ICC_BAR_CLASSES, INITCOMMONCONTROLSEX, InitCommonControlsEx, TB_THUMBTRACK, TBM_SETPOS, TBM_SETRANGE, TBS_AUTOTICKS, TBS_NOTICKS, TBS_VERT,
+    ICC_BAR_CLASSES, INITCOMMONCONTROLSEX, InitCommonControlsEx, TB_ENDTRACK, TB_THUMBPOSITION, TB_THUMBTRACK, TBM_SETPOS, TBM_SETRANGE, TBS_AUTOTICKS,
+    TBS_NOTICKS, TBS_VERT,
 };
 use windows_sys::Win32::UI::HiDpi::{AdjustWindowRectExForDpi, GetDpiForWindow};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
@@ -23,6 +24,9 @@ use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 /// Posted by the worker thread's wake callback: "events are waiting".
 const WM_DEVICE_EVENT: u32 = WM_APP + 1;
+/// A repeating timer: flushes a paced slider step and drops edits the headset never answered.
+const TICK_ID: usize = 1;
+const TICK_MS: u32 = 150;
 /// How long closing the window waits for the worker to end after the disconnect request.
 const CLOSE_WAIT: Duration = Duration::from_millis(1500);
 
@@ -80,6 +84,8 @@ struct App {
     /// The preset names now in the combo, so it is refilled only when they change.
     eq_names: Vec<String>,
     dsee: HWND,
+    /// The slider whose last step was a final code other than ENDTRACK: the timer flushes its value if no ENDTRACK follows (wheel).
+    step_slider: Option<HWND>,
 }
 
 impl App {
@@ -178,6 +184,7 @@ impl App {
             eq_freq,
             eq_names: Vec::new(),
             dsee,
+            step_slider: None,
         };
         // SAFETY: live controls; the strings outlive the calls. None of these messages notifies the parent (TBM_SETRANGE, CB_ADDSTRING).
         unsafe {
@@ -377,21 +384,41 @@ impl App {
     fn on_scroll(&mut self, code: u32, slider: HWND) {
         // SAFETY: `slider` is the control handle the notification came with.
         let pos = unsafe { SendMessageW(slider, TBM_GETPOS, 0, 0) } as i32;
-        // every code but TB_THUMBTRACK is final (keys, wheel, page, ENDTRACK, capture loss); the model drops the duplicate SET of the ENDTRACK that follows
-        let end = code != TB_THUMBTRACK;
+        // TB_THUMBTRACK is a drag; ENDTRACK / THUMBPOSITION release it; every other code (keys, wheel, page, capture loss) is a final value
+        // that auto-repeats, so the model paces it and the next ENDTRACK or the timer flushes the last one. The model drops duplicate SETs.
+        let now = Instant::now();
+        let (drag, end) = (code == TB_THUMBTRACK, matches!(code, TB_ENDTRACK | TB_THUMBPOSITION));
+        self.step_slider = (!drag && !end).then_some(slider);
         if slider == self.level_slider {
-            let c = if end { self.model.nc_level_released(pos as u8) } else { self.model.nc_level_moved(pos as u8, Instant::now()) };
+            let c = match (drag, end) {
+                (true, _) => self.model.nc_level_moved(pos as u8, now),
+                (_, true) => self.model.nc_level_released(pos as u8),
+                _ => self.model.nc_level_stepped(pos as u8, now),
+            };
             self.send(c);
         } else if let Some(i) = self.eq_sliders.iter().position(|&s| s == slider) {
             let db = (6 - pos) as i16;
-            if end {
-                let c = self.model.eq_band_released(i, db);
-                self.send(c);
-            } else {
-                self.model.eq_band_moved(i, db);
-            }
+            let c = match (drag, end) {
+                (true, _) => {
+                    self.model.eq_band_moved(i, db);
+                    None
+                }
+                (_, true) => self.model.eq_band_released(i, db),
+                _ => self.model.eq_band_stepped(i, db, now),
+            };
+            self.send(c);
         }
         self.render();
+    }
+
+    /// The timer: flush the value of a paced step that no ENDTRACK followed, and drop edits the headset never answered.
+    fn tick(&mut self) {
+        if let Some(s) = self.step_slider {
+            self.on_scroll(TB_ENDTRACK, s);
+        }
+        if self.model.expire(Instant::now()) {
+            self.render();
+        }
     }
 
     fn on_connect_button(&mut self) {
@@ -461,7 +488,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         return 0;
     }
     let gesture = msg == WM_COMMAND && matches!((wparam >> 16) as u32, BN_CLICKED | CBN_SELCHANGE);
-    if !(gesture || matches!(msg, WM_HSCROLL | WM_VSCROLL | WM_DEVICE_EVENT | WM_DPICHANGED | WM_CLOSE | WM_NCDESTROY)) {
+    if !(gesture || matches!(msg, WM_HSCROLL | WM_VSCROLL | WM_TIMER | WM_DEVICE_EVENT | WM_DPICHANGED | WM_CLOSE | WM_NCDESTROY)) {
         return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
     }
     // SAFETY: the pointer is set once in `run` to a leaked `App` and cleared in WM_NCDESTROY; only the UI thread gets here.
@@ -490,6 +517,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         },
         WM_HSCROLL | WM_VSCROLL => app.on_scroll((wparam & 0xFFFF) as u32, lparam as HWND),
         WM_DEVICE_EVENT => app.pump(),
+        WM_TIMER if wparam == TICK_ID => app.tick(),
         WM_DPICHANGED => {
             // SAFETY: for WM_DPICHANGED lparam points to the suggested RECT.
             let r = unsafe { *(lparam as *const RECT) };
@@ -562,6 +590,7 @@ pub fn run() -> Result<(), String> {
             return Err("cannot create the window".into());
         }
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(Box::new(App::new(hwnd))) as isize);
+        SetTimer(hwnd, TICK_ID, TICK_MS, None);
         ShowWindow(hwnd, SW_SHOW);
         UpdateWindow(hwnd);
         let mut msg = std::mem::zeroed::<MSG>();

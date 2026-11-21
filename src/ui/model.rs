@@ -8,7 +8,12 @@ use crate::device::ncasm::{Drag, Mode};
 use crate::device::state::DeviceState;
 use crate::device::{Command, Event};
 use crate::mdr::guard::EQ_PRESETS;
-use std::time::Instant;
+use std::time::{Duration, Instant};
+
+/// How long a released slider value or a dropdown pick is shown while the headset says nothing (it may refuse or normalise the value).
+const SETTLE: Duration = Duration::from_secs(1);
+/// Final codes from keys, page steps and the wheel are sent at most this often; the last value is flushed by the ENDTRACK or a timer.
+const STEP_PACE: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Phase {
@@ -38,6 +43,10 @@ pub struct Model {
     /// The dropdown picks (EQ preset id, sensitivity index) shown until the headset answers, so arrow keys on a combo do not snap back each step.
     preset_edit: Option<u8>,
     sens_edit: Option<u8>,
+    /// When the non-held edits (released slider values, dropdown picks) are dropped if the headset has not answered.
+    deadline: Option<Instant>,
+    /// The last paced final SET of a slider step.
+    last_step: Option<Instant>,
 }
 
 /// The noise-control rows. `level` is the displayed slider value (1..=20).
@@ -110,6 +119,8 @@ impl Model {
             eq_edit: None,
             preset_edit: None,
             sens_edit: None,
+            deadline: None,
+            last_step: None,
         }
     }
 
@@ -181,7 +192,32 @@ impl Model {
     }
 
     fn clear_edits(&mut self) {
-        (self.level_edit, self.eq_edit, self.preset_edit, self.sens_edit) = (None, None, None, None);
+        (self.level_edit, self.eq_edit, self.preset_edit, self.sens_edit, self.deadline) = (None, None, None, None, None);
+    }
+
+    fn settle(&mut self) {
+        self.deadline = Some(Instant::now() + SETTLE);
+    }
+
+    /// Drops the edits the headset never answered (a held slider stays). Returns true when something was dropped: redraw.
+    pub fn expire(&mut self, now: Instant) -> bool {
+        if self.deadline.is_none_or(|d| d > now) {
+            return false;
+        }
+        self.deadline = None;
+        self.level_edit = self.level_edit.filter(|e| e.1);
+        self.eq_edit = self.eq_edit.take().filter(|e| e.1);
+        (self.preset_edit, self.sens_edit) = (None, None);
+        true
+    }
+
+    /// true when a step SET may go out now (at most one per `STEP_PACE`).
+    fn pace(&mut self, now: Instant) -> bool {
+        let ok = self.last_step.is_none_or(|t| now.saturating_duration_since(t) >= STEP_PACE);
+        if ok {
+            self.last_step = Some(now);
+        }
+        ok
     }
 
     pub fn view(&self) -> ViewState {
@@ -301,6 +337,7 @@ impl Model {
             return None;
         }
         self.sens_edit = Some(index as u8);
+        self.settle();
         self.nc_set(&format!("--sens {name}"))
     }
 
@@ -318,12 +355,35 @@ impl Model {
             self.level_edit = None; // refused: show the headset's level again
             return None;
         };
-        if self.level_edit == Some((level, false)) {
-            return None; // already sent (the ENDTRACK after a key or page step)
+        // nothing held and already sent (the ENDTRACK after a key step) or already what the headset shows: nothing to do
+        if self.level_edit.is_none_or(|e| !e.1) && (self.level_edit == Some((level, false)) || nc.level == level) {
+            return None;
         }
-        self.level_edit = Some((level, false));
+        // when the headset already reports the level no notification follows the SET: no edit to wait for
+        self.level_edit = (nc.level != level).then_some((level, false));
+        self.settle();
         self.drag.release(&crate::device::ncasm::NcAsm { level, ..nc });
         self.nc_set(&format!("--level {level}"))
+    }
+
+    /// A final code that does not end a drag (key, page, wheel): like `nc_level_released`, but at most one SET per 100 ms; a skipped value stays held.
+    pub fn nc_level_stepped(&mut self, level: u8, now: Instant) -> Option<Command> {
+        if self.pace(now) {
+            return self.nc_level_released(level);
+        }
+        if self.state.nc.is_some_and(|n| n.mode() == Mode::Ambient) && (1..=20).contains(&level) {
+            self.level_edit = Some((level, true));
+        }
+        None
+    }
+
+    /// The paced counterpart of `eq_band_released`.
+    pub fn eq_band_stepped(&mut self, index: usize, db: i16, now: Instant) -> Option<Command> {
+        if self.pace(now) {
+            return self.eq_band_released(index, db);
+        }
+        self.eq_band_moved(index, db);
+        None
     }
 
     pub fn eq_select_preset(&mut self, index: usize) -> Option<Command> {
@@ -333,6 +393,7 @@ impl Model {
             return None;
         }
         self.preset_edit = Some(id);
+        self.settle();
         Self::set("eq", format!("preset {id:#04X}"))
     }
 
@@ -359,6 +420,7 @@ impl Model {
         }
         let text = bands.iter().map(i16::to_string).collect::<Vec<_>>().join(" ");
         self.eq_edit = Some((bands, false));
+        self.settle();
         Self::set("eq", format!("bands {text}"))
     }
 
@@ -637,6 +699,51 @@ mod tests {
         let mut st = sound_state();
         st.nc.as_mut().unwrap().asm = false;
         assert!(with(st).nc_level_released(5).is_none());
+    }
+
+    #[test]
+    fn unanswered_edits_expire_and_equal_releases_clear_at_once() {
+        // the headset already reports 13 (it answered an UNDER_CHANGING): the final SET goes out but no edit is kept
+        let mut st = sound_state();
+        st.nc.as_mut().unwrap().level = 13;
+        let mut m = with(st);
+        m.nc_level_moved(13, Instant::now());
+        assert_eq!(cmd(m.nc_level_released(13)).1, "ambient --level 13");
+        assert_eq!(m.level_edit, None);
+        // a silently refused pick, level and band edit are dropped after the deadline
+        let mut m = with(sound_state());
+        assert!(m.eq_select_preset(1).is_some() && m.nc_sens(1).is_some() && m.nc_level_released(12).is_some() && m.eq_band_released(0, 5).is_some());
+        assert!(!m.expire(Instant::now()));
+        assert_eq!(m.view().sound.eq.unwrap().selected, Some(1));
+        assert!(m.expire(Instant::now() + Duration::from_secs(2)));
+        let s = m.view().sound;
+        assert_eq!((s.nc.as_ref().unwrap().sens, s.nc.unwrap().level), (0, 10));
+        let eq = s.eq.unwrap();
+        assert_eq!((eq.selected, eq.bands[0]), (Some(2), 0));
+        // a held slider is not dropped
+        m.nc_level_moved(15, Instant::now());
+        m.nc_level_released(16);
+        m.nc_level_moved(17, Instant::now());
+        m.expire(Instant::now() + Duration::from_secs(2));
+        assert_eq!(m.view().sound.nc.unwrap().level, 17);
+    }
+
+    #[test]
+    fn key_steps_are_paced_and_the_last_value_is_flushed() {
+        let mut m = with(sound_state());
+        let t0 = Instant::now();
+        assert_eq!(cmd(m.nc_level_stepped(11, t0)).1, "ambient --level 11");
+        assert!(m.nc_level_stepped(12, t0 + Duration::from_millis(30)).is_none());
+        assert!(m.nc_level_stepped(13, t0 + Duration::from_millis(60)).is_none());
+        assert_eq!(m.view().sound.nc.unwrap().level, 13);
+        assert_eq!(cmd(m.nc_level_stepped(14, t0 + Duration::from_millis(120))).1, "ambient --level 14");
+        assert!(m.nc_level_stepped(15, t0 + Duration::from_millis(150)).is_none());
+        assert_eq!(cmd(m.nc_level_released(15)).1, "ambient --level 15"); // the ENDTRACK or the timer
+        assert!(m.nc_level_released(15).is_none());
+        // the same for the equalizer
+        assert!(m.eq_band_stepped(0, 1, t0 + Duration::from_millis(300)).is_some());
+        assert!(m.eq_band_stepped(0, 2, t0 + Duration::from_millis(330)).is_none());
+        assert_eq!(cmd(m.eq_band_released(0, 2)).1, "bands 2 1 2 3 4 5 6 -1 -2 -3");
     }
 
     #[test]
