@@ -161,26 +161,36 @@ pub fn run<T: Transport>(transport: T, mac: u64, keep_mac: bool, listen: Duratio
         }
     };
     if let Some(info) = &info {
+        let mut silent = 0; // consecutive timeouts
         for c in COMMANDS {
             let line = format!("{} ({:?} {})", c.name, c.table, hex(c.payload));
             if !advertised(info, c) {
                 reads.push_str(&format!("  skipped, not advertised: {line}\n"));
                 continue;
             }
-            let mut lost = false;
+            let (mut lost, mut timed_out) = (false, false);
             let outcome = match check(c.table, c.payload, Mode::ReadOnly) {
                 Err(e) => Err(format!("refused by the guard ({e:?})")),
                 Ok(a) => s.request(&a, c.payload[0] + 1).map(|f| show(&f.payload)).map_err(|e| {
                     lost = matches!(e, SessionError::Io(_));
+                    timed_out = matches!(e, SessionError::Timeout);
                     e.to_string()
                 }),
             };
             match outcome {
-                Ok(reply) => reads.push_str(&format!("  {line}\n      reply: {reply}\n")),
+                Ok(reply) => {
+                    silent = 0;
+                    reads.push_str(&format!("  {line}\n      reply: {reply}\n"));
+                }
                 Err(e) => {
                     reads.push_str(&format!("  {line}\n      no reply: {e}\n"));
+                    silent = if timed_out { silent + 1 } else { 0 };
                     if lost {
                         failure = Some(format!("connection lost during {}: {e}", c.name));
+                        break;
+                    }
+                    if silent >= 2 {
+                        failure = Some("headset stopped answering".to_string());
                         break;
                     }
                 }
@@ -214,7 +224,8 @@ pub fn run<T: Transport>(transport: T, mac: u64, keep_mac: bool, listen: Duratio
     out.push_str("the device unique id, and names of other paired devices (\"paired device list\").\n");
     if let Some(i) = &info {
         out.push_str(&format!("\n== Device ==\n  model:             {}\n  firmware:          {}\n", i.model_name, i.firmware));
-        out.push_str(&format!("  protocol version:  0x{:08X}\n  unique id:         {}\n", i.protocol_version, i.unique_id));
+        let uid = if keep_mac { i.unique_id.clone() } else { String::from_utf8_lossy(&scrub(i.unique_id.as_bytes())).into_owned() };
+        out.push_str(&format!("  protocol version:  0x{:08X}\n  unique id:         {uid}\n", i.protocol_version));
         out.push_str(&format!("  series / color:    0x{:02X} / 0x{:02X}\n  table 2 enabled:   {}\n", i.series, i.color, i.table2_enabled));
         function_list(&mut out, "Table 1 support functions", &i.t1_functions, t1_name);
         function_list(&mut out, "Table 2 support functions", &i.t2_functions, t2_name);
@@ -222,8 +233,19 @@ pub fn run<T: Transport>(transport: T, mac: u64, keep_mac: bool, listen: Duratio
     out.push_str(&format!("\n== Feature reads (command, then the headset's reply payload) ==\n{reads}"));
     out.push_str(&format!("\n== Unsolicited frames received after the reads ==\n{unsolicited}"));
     out.push_str("\n== Frame log (ms since start; TX = sent to the headset, RX = received) ==\n");
-    for e in log.borrow().iter() {
-        out.push_str(&format!("{:>7} ms  {}  {}\n", e.ms, if e.tx { "TX" } else { "RX" }, show(&e.bytes)));
+    // A MAC can span two reads, so scrub the whole RX stream (scrub keeps the length) and cut it back into the original chunks.
+    let log = log.borrow();
+    let rx: Vec<u8> = log.iter().filter(|e| !e.tx).flat_map(|e| e.bytes.iter().copied()).collect();
+    let rx = if keep_mac { rx } else { scrub(&rx) };
+    let mut pos = 0;
+    for e in log.iter() {
+        let bytes = if e.tx {
+            &e.bytes[..]
+        } else {
+            pos += e.bytes.len();
+            &rx[pos - e.bytes.len()..pos]
+        };
+        out.push_str(&format!("{:>7} ms  {}  {}\n", e.ms, if e.tx { "TX" } else { "RX" }, hex(bytes)));
     }
     (out, failure.map_or(Ok(()), Err))
 }
@@ -302,6 +324,51 @@ mod tests {
         let (shown, _) = full(true);
         assert!(shown.contains("MAC:       AA:BB:CC:DD:EE:FF"));
         assert!(shown.contains(&other_mac));
+    }
+
+    /// Hands out at most 5 bytes per read, so frames (and the MAC inside) arrive split.
+    struct Chunky<T> {
+        inner: T,
+        pending: std::collections::VecDeque<u8>,
+    }
+
+    impl<T: Transport> Transport for Chunky<T> {
+        fn read(&mut self, buf: &mut [u8], timeout: Duration) -> io::Result<usize> {
+            if self.pending.is_empty() {
+                let n = self.inner.read(buf, timeout)?;
+                self.pending.extend(&buf[..n]);
+            }
+            let n = self.pending.len().min(5);
+            for b in buf.iter_mut().take(n) {
+                *b = self.pending.pop_front().unwrap();
+            }
+            Ok(n)
+        }
+        fn write(&mut self, data: &[u8]) -> io::Result<()> {
+            self.inner.write(data)
+        }
+        fn close(&mut self) {
+            self.inner.close();
+        }
+    }
+
+    #[test]
+    fn mac_split_across_reads_is_still_redacted() {
+        let h = FakeHeadset::xm6(&ALL_T1, &ALL_T2, true);
+        let (report, _) = run(Chunky { inner: h, pending: Default::default() }, 1, false, Duration::from_millis(5), FAST);
+        let mac = hex(b"11:22:33:44:55:66");
+        assert!(!report.contains(&mac) && !report.contains(&mac[..20]) && !report.contains(&mac[mac.len() - 20..]));
+        assert!(report.contains(&hex(b"XX:XX:XX:XX:XX:XX")));
+    }
+
+    #[test]
+    fn silent_headset_stops_after_two_timeouts_and_still_reports() {
+        let mut h = FakeHeadset::xm6(&ALL_T1, &ALL_T2, true);
+        h.generic = false;
+        let (report, result) = run(h, 1, false, Duration::from_millis(5), FAST);
+        assert_eq!(result.unwrap_err(), "headset stopped answering");
+        assert!(report.contains("Result:    headset stopped answering"));
+        assert_eq!(tx_frames(&report).iter().filter(|f| f.data_type != TYPE_ACK).count(), 7 + 2);
     }
 
     #[test]

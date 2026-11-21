@@ -101,8 +101,11 @@ impl<T: Transport> Session<T> {
         self.send(cmd)?;
         let data_type = cmd.table().data_type();
         let deadline = Instant::now() + self.timeouts.response;
+        // several GETs share a reply id; the reply echoes the command's second byte
+        let sub = cmd.payload().get(1);
         loop {
-            if let Some(i) = self.queue.iter().skip(first_new).position(|f| f.data_type == data_type && f.payload.first() == Some(&reply_id)) {
+            let matches = |f: &Frame| f.data_type == data_type && f.payload.first() == Some(&reply_id) && (sub.is_none() || f.payload.get(1) == sub);
+            if let Some(i) = self.queue.iter().skip(first_new).position(matches) {
                 return Ok(self.queue.remove(first_new + i).expect("index just found"));
             }
             if Instant::now() >= deadline {
@@ -289,6 +292,16 @@ mod tests {
         let f = s.request(&cmd(&[0, 0]), 0x01).unwrap();
         assert_eq!(f.payload, vec![0x01, 0x00, 0xAA]);
         assert_eq!(s.poll_notifications(Duration::from_millis(1)).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn request_requires_matching_second_byte() {
+        let wrong = pack_raw(TYPE_T1, 0, &[0x21, 0x05, 0xAA]).unwrap();
+        let right = pack_raw(TYPE_T1, 1, &[0x21, 0x04, 0xBB]).unwrap();
+        let mut s = session(vec![vec![data(pack_ack(1)), data(wrong), data(right)]]);
+        let f = s.request(&cmd(&[0x20, 0x04]), 0x21).unwrap();
+        assert_eq!(f.payload, vec![0x21, 0x04, 0xBB]);
+        assert_eq!(s.poll_notifications(Duration::from_millis(1)).unwrap().len(), 1); // the 05 frame stayed queued
     }
 
     #[test]

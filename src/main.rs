@@ -40,7 +40,7 @@ fn main() -> ExitCode {
 /// The value after `flag`, `None` if the flag is absent, an error if it is last.
 fn flag_value<'a>(args: &'a [String], flag: &str) -> Result<Option<&'a str>, String> {
     match args.iter().position(|a| a == flag) {
-        Some(i) => args.get(i + 1).map(|v| Some(v.as_str())).ok_or_else(|| format!("{flag} needs a value")),
+        Some(i) => args.get(i + 1).filter(|v| !v.starts_with("--")).map(|v| Some(v.as_str())).ok_or_else(|| format!("{flag} needs a value")),
         None => Ok(None),
     }
 }
@@ -107,5 +107,7 @@ mod tests {
         assert_eq!(super::flag_value(&a, "--probe").unwrap(), Some("out.txt"));
         assert_eq!(super::flag_value(&a, "--keep-mac").unwrap(), None);
         assert!(super::flag_value(&a, "--device").is_err());
+        let b: Vec<String> = ["--probe", "--keep-mac"].map(String::from).to_vec();
+        assert!(super::flag_value(&b, "--probe").is_err());
     }
 }
