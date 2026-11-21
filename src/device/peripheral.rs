@@ -305,6 +305,21 @@ mod tests {
     }
 
     #[test]
+    fn ntfy_39_02_and_39_01_through_the_worker() {
+        let mut h = FakeHeadset::from_xm6_capture();
+        // the headset answers the GETs with NTFY frames: a one-entry list and multipoint off
+        h.replies.retain(|r| !(r.0 == TYPE_T2 && (r.1 == [0x36, 0x02] || r.1 == [0x36, 0x01])));
+        let mut f = list(&[entry(1, [1, 2, 3], "Phone")], &[1]);
+        f[0] = 0x39;
+        h.replies.push((TYPE_T2, vec![0x36, 0x02], f));
+        h.replies.push((TYPE_T2, vec![0x36, 0x01], vec![0x39, 0x01, 0x00, 0x00]));
+        let (_handle, rx) = start(h);
+        let s = synced(&rx);
+        assert_eq!(s.multipoint, Some(false));
+        assert_eq!(s.devices.as_ref().map(|d| (d.len(), d[0].name.as_str(), d[0].connected)), Some((1, "Phone", true)));
+    }
+
+    #[test]
     fn not_advertised_sends_nothing() {
         let h = FakeHeadset::xm6(&[], &[0x10], true);
         let writes = h.writes.clone();
