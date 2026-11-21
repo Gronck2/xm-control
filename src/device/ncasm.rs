@@ -116,6 +116,11 @@ impl Feature for NcAsmFeature {
         vec![Get { table: Table::T1, payload: vec![0x66, TYPE], reply_id: RET }]
     }
 
+    /// Re-read after a SET: the next SET is built from the stored state, so it must not wait for a NTFY that may come late.
+    fn after_set(&self, info: &DeviceInfo) -> Vec<Get> {
+        self.initial_gets(info)
+    }
+
     fn on_frame(&self, state: &mut DeviceState, table: Table, payload: &[u8]) -> Parsed {
         let (Table::T1, [RET | NTFY, TYPE, args @ ..]) = (table, payload) else { return Parsed::NotMine };
         // an unusable frame makes the stored value stale: forget it so no SET is built from it
@@ -349,7 +354,17 @@ mod tests {
                 break;
             }
         }
-        assert!(writes.lock().unwrap().iter().filter_map(|b| unpack(b).ok()).any(|f| f.data_type != TYPE_ACK && f.payload == set));
+        // the SET is followed by a re-read, so the next SET is not built from a state the NTFY has not updated yet
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let sent: Vec<_> = writes.lock().unwrap().iter().filter_map(|b| unpack(b).ok()).filter(|f| f.data_type != TYPE_ACK).map(|f| f.payload).collect();
+            let at = sent.iter().position(|p| *p == set).expect("SET sent");
+            if sent[at + 1..].contains(&vec![0x66, 0x19]) {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "no re-read after the SET");
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 
     #[test]
