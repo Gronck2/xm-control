@@ -12,7 +12,7 @@ Owner's MVP list; advertised on XM6 (T1 function 0xFC SMART_TALKING_MODE_TYPE2).
 - Sensitivity/timeout: GET `FA 0C` -> `FB 0C <sensitivity> <timeout>`; SET `FC 0C <sensitivity> <timeout>`; NTFY `FD 0C ...` (reference). Sensitivity AUTO 0, HIGH 1, LOW 2; timeout FAST 0, MID 1, SLOW 2, NONE 3 (manual off).
 - Fixture decode: `F7 0C 01 01` = Speak-to-Chat **off**, preview off; `FB 0C 00 01` = sensitivity AUTO, timeout MID.
 - Read-modify-write between the two SETs: changing sensitivity must not change enable and vice versa.
-- Dev CLI `--get stc`, `--set stc on|off [--sens auto|high|low] [--timeout fast|mid|slow|none]`.
+- Dev CLI `--get stc`; one change per call: `--set stc on|off`, `--set stc "sens auto|high|low"`, `--set stc "timeout fast|mid|slow|none"` (each SET carries one payload; the other byte comes from state).
 - Allowlist: GET `F6 0C`, `FA 0C`; SET `F8 0C <00|01> 01` and `FC 0C <00..02> <00..03>` (validated bytes, exact length). `F8 09` stays denied (RESET_SETTINGS / FACTORY_RESET).
 
 ## Out of scope
