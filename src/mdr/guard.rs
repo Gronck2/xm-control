@@ -20,6 +20,7 @@ impl Table {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
+    #[allow(dead_code)] // first used by the feature tasks (SETs)
     Normal,
     /// GET commands only (used by `--probe`).
     ReadOnly,
@@ -68,6 +69,35 @@ const ALLOW: &[(Table, &[u8], Kind)] = &[
     (Table::T1, &[0x04, 0x03], Kind::Get), // GET_DEVICE_INFO SERIES_AND_COLOR
     (Table::T1, &[0x06, 0x00], Kind::Get), // CONNECT_GET_SUPPORT_FUNCTION
     (Table::T2, &[0x06, 0x00], Kind::Get), // Table 2 support functions
+    // read-only feature GETs issued by --probe (src/probe.rs)
+    (Table::T1, &[0x22, 0x00], Kind::Get), // battery level
+    (Table::T1, &[0x22, 0x08], Kind::Get), // battery level with threshold
+    (Table::T1, &[0x66, 0x19], Kind::Get), // NC/ASM noise adaptation
+    (Table::T1, &[0x66, 0x17], Kind::Get), // NC/ASM
+    (Table::T1, &[0x66, 0x22], Kind::Get), // ASM only
+    (Table::T1, &[0x5A, 0x00], Kind::Get), // EQ band frequencies
+    (Table::T1, &[0x56, 0x00], Kind::Get), // EQ parameters
+    (Table::T1, &[0x52, 0x00], Kind::Get), // EQ status
+    (Table::T1, &[0xE6, 0x01], Kind::Get), // DSEE parameter
+    (Table::T1, &[0xE2, 0x01], Kind::Get), // DSEE status
+    (Table::T1, &[0xF6, 0x0C], Kind::Get), // speak-to-chat enable
+    (Table::T1, &[0xFA, 0x0C], Kind::Get), // speak-to-chat sensitivity
+    (Table::T1, &[0x20, 0x04], Kind::Get), // auto power-off capability
+    (Table::T1, &[0x26, 0x04], Kind::Get), // auto power-off parameter
+    (Table::T1, &[0x20, 0x05], Kind::Get), // auto power-off (wearing) capability
+    (Table::T1, &[0x26, 0x05], Kind::Get), // auto power-off (wearing) parameter
+    (Table::T1, &[0xF6, 0x01], Kind::Get), // auto pause on removal
+    (Table::T1, &[0x12, 0x02], Kind::Get), // codec indicator
+    (Table::T1, &[0xD6, 0x01], Kind::Get), // general setting 1
+    (Table::T1, &[0xD6, 0x02], Kind::Get), // general setting 2
+    (Table::T1, &[0xD6, 0x03], Kind::Get), // general setting 3
+    (Table::T1, &[0xD6, 0x04], Kind::Get), // general setting 4
+    (Table::T2, &[0xF2, 0x00], Kind::Get), // wearing status
+    (Table::T2, &[0x36, 0x01], Kind::Get), // multipoint (source switch control)
+    (Table::T2, &[0x36, 0x02], Kind::Get), // paired device list
+    (Table::T2, &[0x32, 0x02], Kind::Get), // pairing mode status
+    (Table::T2, &[0x5A, 0x00], Kind::Get), // safe listening HBS_1
+    (Table::T2, &[0x5A, 0x02], Kind::Get), // safe listening HBS_2
 ];
 
 fn denied(table: Table, p: &[u8]) -> bool {
@@ -157,7 +187,7 @@ mod tests {
     fn unknown_commands_rejected() {
         assert_eq!(check(Table::T1, &[], Mode::Normal).unwrap_err(), GuardError::Empty);
         for (t, p) in [
-            (Table::T1, &[0x22, 0x00][..]),   // battery GET: not allowlisted yet
+            (Table::T1, &[0x22, 0x01][..]),   // unknown battery inquiry type
             (Table::T1, &[0x00, 0x00, 0x01]), // handshake GET with extra bytes
             (Table::T1, &[0xE8, 0x03, 0x00]), // listening modes
             (Table::T1, &[0x24, 0x03, 0x01]), // power off now: out of scope

@@ -1,6 +1,6 @@
 # Architecture overview
 
-Current shape: `src/main.rs` prints the version or runs `--connect-test`. There is a hardware-free protocol layer in `src/mdr/` and a Windows Bluetooth transport in `src/bt/`; no UI yet.
+Current shape: `src/main.rs` prints the version or runs `--connect-test` or `--probe`. There is a hardware-free protocol layer in `src/mdr/` and a Windows Bluetooth transport in `src/bt/`; no UI yet.
 
 Layers built so far:
 - `src/mdr/frame.rs`: MDR frame pack/unpack (escaping, checksum, 2048-byte limit) and a streaming `FrameParser` that drops bad frames and resyncs on `3E`.
@@ -12,6 +12,9 @@ Layers built so far:
 - `src/bt/`: `enumerate.rs` lists paired devices (Win32 `BluetoothFindFirstRadio/Device`); `winsock.rs` is the `AF_BTH` RFCOMM `Transport` (V2 UUID, port 0 via SDP,
   authenticate + encrypt, connect with timeout); `windows-sys` is the only Win32 dependency (ADR 0002).
 - `xm-control --connect-test [--device <mac>]`: connects, prints, closes; sends no MDR command. Without `--device` it picks the single paired `WH-1000XM*`.
+- `src/device/handshake.rs`: the V2 init handshake (`00 00`, `02 00`, `04 02`, `04 01`, `04 03`, `06 00`, T2 `06 00` only if table 2 is enabled) into `DeviceInfo`; read-only guard mode; fails cleanly if table 1 is unsupported.
+- `src/probe.rs`: `xm-control --probe <out> [--device <mac>] [--keep-mac]`: handshake, then read-only GETs of the MVP features that the support lists advertise, 5 s listening for unsolicited frames,
+  and a plain-text dump (device, support lists, feature reads, hex frame log). The MAC and any MAC-shaped text in frames are hidden unless `--keep-mac`. The file is written even if the run fails part-way.
 
 Intended shape (not built yet): a Windows window app that opens an RFCOMM connection to Sony WH-1000XM6 headphones,
 speaks Sony's MDR protocol (framing, ACKs, get/set/notify commands) and shows the headphone settings in one window.
