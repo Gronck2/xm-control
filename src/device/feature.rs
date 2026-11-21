@@ -20,6 +20,14 @@ pub trait Feature: Sync {
     /// Support-function ids (table, id) that must ALL be in the headset's lists; otherwise the feature is not used and its state stays `None`.
     fn required(&self) -> &'static [(Table, u8)];
 
+    /// Whether the feature is used with this headset. Default: every `required` function is listed; override for a rule that is not an AND.
+    fn available(&self, info: &DeviceInfo) -> bool {
+        self.required().iter().all(|&(t, id)| match t {
+            Table::T1 => info.has_t1(id),
+            Table::T2 => info.has_t2(id),
+        })
+    }
+
     /// GETs for the initial sync (only asked when the feature is supported).
     fn initial_gets(&self, info: &DeviceInfo) -> Vec<Get>;
 
@@ -43,10 +51,7 @@ pub trait Feature: Sync {
 }
 
 pub fn supported(f: &dyn Feature, info: &DeviceInfo) -> bool {
-    f.required().iter().all(|&(t, id)| match t {
-        Table::T1 => info.has_t1(id),
-        Table::T2 => info.has_t2(id),
-    })
+    f.available(info)
 }
 
 #[derive(Debug, PartialEq, Eq)]

@@ -13,7 +13,7 @@ Owner's MVP list; battery-life and daily-use settings.
   - Fixture decode: `21 05 02 10 11` = candidates {0x10, 0x11}; `27 05 10 00` = currently "power off when removed from ears". So the UI is a two-way choice: "when removed from ears" / "never".
 - Auto pause on removal: function 0xF1 (advertised). GET `F6 01` -> `F7 01 <OnOff>`; SET `F8 01 <OnOff>` (inverted polarity, ON = 0x00); NTFY `F9 01 <OnOff>` (reference). Fixture decode: `F7 01 00` = ON.
 - Wearing status (T2, data type 0x0E): GET `F2 00` -> `F3 00 <code>`, NTFY `F5 00 <code>`; codes NORMAL 0, ILLEGAL 1, LEFT_NOT_WEAR 2, RIGHT_NOT_WEAR 3, BOTH_NOT_WEAR 4. Fixture: `F3 00 00` = NORMAL. Queried only when T2 exists and one of T2 0xF0 / T1 0xF6 / T1 0xF1 is advertised: on XM6 the rule passes through 0xF1 alone (0xF0 and 0xF6 are absent).
-- Dev CLI `--get power`, `--set poweroff <removed|off>`, `--set autopause on|off`, `--get wearing`.
+- Dev CLI (generic, one feature name + one value): `--get poweroff`, `--set poweroff <removed|off>`, `--get autopause`, `--set autopause <on|off>`, `--get wearing` (three features: `poweroff`, `autopause`, `wearing`).
 - Allowlist: GET `20 05`, `26 05`, `F6 01`, T2 `F2 00` (all already present for `--probe`); SET `28 05 <10|11> 00` and `F8 01 <00|01>` (validated). NOT allowlisted: any `24 ..` (power off now, factory power off `24 03 FF`, `24 07`), head gesture `F6/F8 0F`, `20 04` / `26 04` / `28 04`.
 
 ## Out of scope

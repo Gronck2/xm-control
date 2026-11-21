@@ -10,8 +10,10 @@ pub mod handshake;
 #[cfg(test)]
 pub mod mock;
 pub mod ncasm;
+pub mod power;
 pub mod state;
 pub mod stc;
+pub mod wearing;
 
 use crate::bt::{MDR_V2_UUID, parse_guid, winsock::WinsockRfcomm};
 use crate::mdr::frame::{Frame, FrameError, TYPE_T1};
@@ -24,7 +26,16 @@ use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::time::{Duration, Instant};
 
 /// All features, in sync order. Feature tasks add one line each.
-pub static FEATURES: &[&dyn Feature] = &[&battery::BatteryFeature, &ncasm::NcAsmFeature, &eq::EqFeature, &dsee::DseeFeature, &stc::StcFeature];
+pub static FEATURES: &[&dyn Feature] = &[
+    &battery::BatteryFeature,
+    &ncasm::NcAsmFeature,
+    &eq::EqFeature,
+    &dsee::DseeFeature,
+    &stc::StcFeature,
+    &power::PowerOffFeature,
+    &power::AutoPauseFeature,
+    &wearing::WearingFeature,
+];
 
 /// How long the worker waits for incoming frames between checks of the command channel.
 /// shortcut: a command can wait up to this long before it is sent; fine for button-driven UIs, use a wakeable transport read if it ever matters.

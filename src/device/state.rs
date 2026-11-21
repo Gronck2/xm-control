@@ -18,6 +18,10 @@ pub struct DeviceState {
     /// A DSEE status frame said it is unavailable; SET is not sent then.
     pub dsee_disabled: bool,
     pub stc: super::stc::Stc,
+    pub power: super::power::Power,
+    /// Auto pause on removal: true = ON.
+    pub autopause: Option<bool>,
+    pub wearing: Option<super::wearing::Wearing>,
     /// Payload (after the two id bytes) of the last frame the test feature accepted.
     #[cfg(test)]
     pub dummy: Option<Vec<u8>>,
