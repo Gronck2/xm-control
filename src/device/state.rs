@@ -17,6 +17,7 @@ pub struct DeviceState {
     pub dsee: Option<bool>,
     /// A DSEE status frame said it is unavailable; SET is not sent then.
     pub dsee_disabled: bool,
+    pub stc: super::stc::Stc,
     /// Payload (after the two id bytes) of the last frame the test feature accepted.
     #[cfg(test)]
     pub dummy: Option<Vec<u8>>,

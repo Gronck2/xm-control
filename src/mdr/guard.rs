@@ -86,27 +86,40 @@ const ALLOW: &[(Table, &[u8], Kind)] = &[
     (Table::T1, &[0xE8, 0x01, 0x01], Kind::Set(no_args)), // DSEE AUTO
     (Table::T1, &[0xF6, 0x0C], Kind::Get),                // speak-to-chat enable
     (Table::T1, &[0xFA, 0x0C], Kind::Get),                // speak-to-chat sensitivity
-    (Table::T1, &[0x20, 0x04], Kind::Get),                // auto power-off capability
-    (Table::T1, &[0x26, 0x04], Kind::Get),                // auto power-off parameter
-    (Table::T1, &[0x20, 0x05], Kind::Get),                // auto power-off (wearing) capability
-    (Table::T1, &[0x26, 0x05], Kind::Get),                // auto power-off (wearing) parameter
-    (Table::T1, &[0xF6, 0x01], Kind::Get),                // auto pause on removal
-    (Table::T1, &[0x12, 0x02], Kind::Get),                // codec indicator
-    (Table::T1, &[0xD6, 0x01], Kind::Get),                // general setting 1
-    (Table::T1, &[0xD6, 0x02], Kind::Get),                // general setting 2
-    (Table::T1, &[0xD6, 0x03], Kind::Get),                // general setting 3
-    (Table::T1, &[0xD6, 0x04], Kind::Get),                // general setting 4
-    (Table::T2, &[0xF2, 0x00], Kind::Get),                // wearing status
-    (Table::T2, &[0x36, 0x01], Kind::Get),                // multipoint (source switch control)
-    (Table::T2, &[0x36, 0x02], Kind::Get),                // paired device list
-    (Table::T2, &[0x32, 0x02], Kind::Get),                // pairing mode status
-    (Table::T2, &[0x5A, 0x00], Kind::Get),                // safe listening HBS_1
-    (Table::T2, &[0x5A, 0x02], Kind::Get),                // safe listening HBS_2
+    // F8 is shared with the denied F8 09 reset; the denylist wins, and this row only takes `<00|01> 01` after F8 0C (src/device/stc.rs)
+    (Table::T1, &[0xF8, 0x0C], Kind::Set(stc_enable_args)), // speak-to-chat enable SET (00 = ON)
+    (Table::T1, &[0xFC, 0x0C], Kind::Set(stc_sens_args)),   // speak-to-chat sensitivity + timeout SET
+    (Table::T1, &[0x20, 0x04], Kind::Get),                  // auto power-off capability
+    (Table::T1, &[0x26, 0x04], Kind::Get),                  // auto power-off parameter
+    (Table::T1, &[0x20, 0x05], Kind::Get),                  // auto power-off (wearing) capability
+    (Table::T1, &[0x26, 0x05], Kind::Get),                  // auto power-off (wearing) parameter
+    (Table::T1, &[0xF6, 0x01], Kind::Get),                  // auto pause on removal
+    (Table::T1, &[0x12, 0x02], Kind::Get),                  // codec indicator
+    (Table::T1, &[0xD6, 0x01], Kind::Get),                  // general setting 1
+    (Table::T1, &[0xD6, 0x02], Kind::Get),                  // general setting 2
+    (Table::T1, &[0xD6, 0x03], Kind::Get),                  // general setting 3
+    (Table::T1, &[0xD6, 0x04], Kind::Get),                  // general setting 4
+    (Table::T2, &[0xF2, 0x00], Kind::Get),                  // wearing status
+    (Table::T2, &[0x36, 0x01], Kind::Get),                  // multipoint (source switch control)
+    (Table::T2, &[0x36, 0x02], Kind::Get),                  // paired device list
+    (Table::T2, &[0x32, 0x02], Kind::Get),                  // pairing mode status
+    (Table::T2, &[0x5A, 0x00], Kind::Get),                  // safe listening HBS_1
+    (Table::T2, &[0x5A, 0x02], Kind::Get),                  // safe listening HBS_2
 ];
 
 /// For SET rows that are a complete payload: no bytes may follow.
 fn no_args(a: &[u8]) -> bool {
     a.is_empty()
+}
+
+/// After `F8 0C`: `<00 ON | 01 OFF> 01` (preview always off).
+fn stc_enable_args(a: &[u8]) -> bool {
+    matches!(a, [0..=1, 1])
+}
+
+/// After `FC 0C`: sensitivity 0..=2, timeout 0..=3.
+fn stc_sens_args(a: &[u8]) -> bool {
+    matches!(a, [0..=2, 0..=3])
 }
 
 /// The 7 bytes of an NC/ASM `68 19` SET (also used to check replies): valueChange, totalEffect, mode, ambientMode, level 1..=20, autoAsm, sensitivity.
