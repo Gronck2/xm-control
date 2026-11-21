@@ -17,7 +17,7 @@ Layers built so far:
   and a plain-text dump (device, support lists, feature reads, hex frame log). The MAC and any MAC-shaped text in frames are hidden unless `--keep-mac`. The file is written even if the run fails part-way.
 - `src/device/{mod,state,feature}.rs`: the device worker (ADR 0004). `DeviceHandle::connect(mac, wake)` starts one thread that owns the `Session`: handshake, initial sync of the
   supported features, then a loop over `Command`s in and incoming RET/NTFY frames. `Event`s (`Connected`, `Synced`, `StateChanged` + snapshot, `Unhandled`, `Error`, `Disconnected`) go out over
-  `mpsc`. `trait Feature` (support-list gate, initial GETs, frame parser, SET encoder) is registered in the static `FEATURES` slice (battery, NC/ambient and equalizer registered; the rest come with tasks 0008-0011; SET rows in the guard carry an argument validator). No auto-reconnect.
+  `mpsc`. `trait Feature` (support-list gate, initial GETs, frame parser, SET encoder, post-SET re-read GETs `after_set`) is registered in the static `FEATURES` slice (battery, NC/ambient and equalizer registered; the rest come with tasks 0008-0011; SET rows in the guard carry an argument validator). No auto-reconnect.
 - Dev CLI: `--get [feature]` (device info and state after the initial sync), `--set <feature> <value>`, `--watch [secs]` (event log); all take `--device <mac>`. Sends nothing but the read-only sync until a feature exists.
 
 Layers, top to bottom: UI / dev CLI -> `device` worker (state, events) -> `mdr::session` (ACK, seq, retry) -> `mdr::guard` + `mdr::frame` -> `bt` transport.
