@@ -2,10 +2,9 @@
 
 use crate::mdr::frame::{TYPE_ACK, TYPE_T1, TYPE_T2, pack_ack, pack_raw_for_tests, unpack};
 use crate::mdr::session::Transport;
-use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::io;
-use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 pub struct FakeHeadset {
@@ -17,7 +16,9 @@ pub struct FakeHeadset {
     pub no_reply: Vec<Vec<u8>>,
     /// When this T1 command arrives, also push this unsolicited T1 payload.
     pub ntfy_on: Option<(Vec<u8>, Vec<u8>)>,
-    pub writes: Rc<RefCell<Vec<Vec<u8>>>>,
+    pub writes: Arc<Mutex<Vec<Vec<u8>>>>,
+    /// A write of this payload fails with a broken pipe (simulates a lost link).
+    pub fail_on: Option<Vec<u8>>,
     inbox: VecDeque<Vec<u8>>,
     seq: u8,
 }
@@ -52,7 +53,8 @@ impl FakeHeadset {
             generic: true,
             no_reply: vec![],
             ntfy_on: None,
-            writes: Rc::default(),
+            writes: Arc::default(),
+            fail_on: None,
             inbox: VecDeque::new(),
             seq: 0,
         }
@@ -74,10 +76,13 @@ impl Transport for FakeHeadset {
     }
 
     fn write(&mut self, data: &[u8]) -> io::Result<()> {
-        self.writes.borrow_mut().push(data.to_vec());
+        self.writes.lock().unwrap().push(data.to_vec());
         let Ok(f) = unpack(data) else { return Ok(()) };
         if f.data_type == TYPE_ACK {
             return Ok(());
+        }
+        if self.fail_on.as_ref() == Some(&f.payload) {
+            return Err(io::ErrorKind::BrokenPipe.into());
         }
         let muted = self.no_reply.contains(&f.payload);
         let reply = match self.replies.iter().find(|(dt, c, _)| *dt == f.data_type && *c == f.payload) {
@@ -98,4 +103,47 @@ impl Transport for FakeHeadset {
     }
 
     fn close(&mut self) {}
+}
+
+/// The RX/TX frames of the "Frame log" of tests/fixtures/xm6-probe.txt as (is_tx, raw bytes).
+fn capture_frames() -> Vec<(bool, Vec<u8>)> {
+    let text = include_str!("../../tests/fixtures/xm6-probe.txt");
+    let log = text.lines().skip_while(|l| !l.starts_with("== Frame log")).skip(1);
+    log.filter_map(|l| {
+        let mut t = l.split_whitespace().skip(2); // "<ms> ms"
+        let tx = t.next()? == "TX";
+        Some((tx, t.map(|b| u8::from_str_radix(b, 16).unwrap()).collect()))
+    })
+    .collect()
+}
+
+impl FakeHeadset {
+    /// The real XM6 (firmware 3.1.5) as captured: every command in the capture gets the reply the headset gave (the first non-ACK frame after it,
+    /// whatever its type byte), commands it only ACKed stay silent, and everything else is not answered at all.
+    pub fn from_xm6_capture() -> Self {
+        let mut h = FakeHeadset::xm6(&[], &[], true);
+        h.generic = false;
+        h.replies.clear();
+        let mut cur: Option<(u8, Vec<u8>, Option<Vec<u8>>)> = None;
+        let mut done = Vec::new();
+        for (tx, raw) in capture_frames() {
+            let f = unpack(&raw).unwrap();
+            if f.data_type == TYPE_ACK {
+                continue;
+            }
+            if tx {
+                done.extend(cur.replace((f.data_type, f.payload, None)));
+            } else if let Some((_, _, r @ None)) = cur.as_mut() {
+                *r = Some(f.payload);
+            }
+        }
+        done.extend(cur);
+        for (dt, cmd, reply) in done {
+            match reply {
+                Some(r) => h.replies.push((dt, cmd, r)),
+                None => h.no_reply.push(cmd),
+            }
+        }
+        h
+    }
 }

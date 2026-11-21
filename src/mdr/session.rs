@@ -18,8 +18,10 @@ pub trait Transport {
 pub enum SessionError {
     Io(io::Error),
     Frame(FrameError),
-    /// No ACK after all tries, or no matching reply in time.
+    /// No ACK after all tries.
     Timeout,
+    /// ACKed, but no matching reply in time (the XM6 does this for some GETs); the session stays usable.
+    NoReply,
 }
 
 impl std::fmt::Display for SessionError {
@@ -27,7 +29,7 @@ impl std::fmt::Display for SessionError {
         match self {
             SessionError::Io(e) => write!(f, "I/O error: {e}"),
             SessionError::Frame(e) => write!(f, "frame error: {e:?}"),
-            SessionError::Timeout => write!(f, "timed out"),
+            SessionError::Timeout | SessionError::NoReply => write!(f, "timed out"),
         }
     }
 }
@@ -109,7 +111,7 @@ impl<T: Transport> Session<T> {
                 return Ok(self.queue.remove(first_new + i).expect("index just found"));
             }
             if Instant::now() >= deadline {
-                return Err(SessionError::Timeout);
+                return Err(SessionError::NoReply);
             }
             self.pump(deadline, false)?;
         }
@@ -310,14 +312,14 @@ mod tests {
         s.transport.inbox.push_back(data(pack_raw(TYPE_T1, 0, &[0x01, 0x00, 0xEE]).unwrap()));
         s.pump(Instant::now() + Duration::from_millis(5), false).unwrap();
         assert_eq!(s.queue.len(), 1);
-        assert!(matches!(s.request(&cmd(&[0, 0]), 0x01), Err(SessionError::Timeout)));
+        assert!(matches!(s.request(&cmd(&[0, 0]), 0x01), Err(SessionError::NoReply)));
         assert_eq!(s.queue.len(), 1); // the stale frame is still there for poll_notifications
     }
 
     #[test]
     fn request_times_out_without_reply() {
         let mut s = session(vec![vec![data(pack_ack(1))]]);
-        assert!(matches!(s.request(&cmd(&[0, 0]), 0x01), Err(SessionError::Timeout)));
+        assert!(matches!(s.request(&cmd(&[0, 0]), 0x01), Err(SessionError::NoReply)));
     }
 
     #[test]
