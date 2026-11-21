@@ -243,7 +243,7 @@ impl Model {
                 }
             }
             Event::Error(e) => {
-                self.notice = Some(format!("{e:?}"));
+                self.notice = Some(format!("{e}"));
                 self.clear_edits();
             }
             Event::Unhandled { .. } => {}
@@ -777,7 +777,7 @@ mod tests {
         let mut m = connecting();
         m.apply(Event::Connected(info()));
         m.apply(Event::Error(CommandError::NotSupported("x".into())));
-        assert!(m.view().status.contains("NotSupported"));
+        assert!(m.view().status.ends_with(&format!("({})", CommandError::NotSupported("x".into()))));
         assert!(m.active());
         m.apply(Event::Disconnected("gone".into()));
         assert_eq!(m.view().status, "Disconnected: gone");

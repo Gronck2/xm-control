@@ -162,6 +162,7 @@ fn device_cli(args: &[String], device: Option<&str>) -> Result<(), String> {
                 until = Some(Instant::now() + linger);
             }
             Ok(Event::Disconnected(reason)) => return Err(format!("disconnected: {reason}")),
+            Ok(Event::Error(e)) => println!("error: {e}"),
             Ok(e) => println!("{e:?}"),
             Err(RecvTimeoutError::Timeout) if until.is_some() => return Ok(()),
             Err(RecvTimeoutError::Timeout) => return Err("no answer from the headset".into()),

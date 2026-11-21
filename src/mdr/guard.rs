@@ -37,6 +37,19 @@ pub enum GuardError {
     ReadOnly,
 }
 
+impl std::fmt::Display for GuardError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            GuardError::Empty => "empty command",
+            GuardError::Denied => "this command is never allowed",
+            GuardError::NotAllowed => "not allowed",
+            GuardError::ReadOnly => "not allowed in read-only mode",
+        })
+    }
+}
+
+impl std::error::Error for GuardError {}
+
 /// A GET row matches its payload exactly. A SET row matches its prefix, and the validator must accept the argument bytes after it
 /// (feature tasks add rows; the validator is where each field is range-checked).
 #[derive(Clone, Copy)]
@@ -211,6 +224,13 @@ fn check_in(allow: &[Row], table: Table, payload: &[u8], mode: Mode) -> Result<A
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn guard_error_display_is_readable() {
+        for e in [GuardError::Empty, GuardError::Denied, GuardError::NotAllowed, GuardError::ReadOnly] {
+            assert!(!e.to_string().is_empty() && e.to_string() != format!("{e:?}"));
+        }
+    }
 
     const MAC: &[u8; 17] = b"AA:BB:CC:DD:EE:FF";
 
