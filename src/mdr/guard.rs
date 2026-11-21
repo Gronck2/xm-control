@@ -37,11 +37,12 @@ pub enum GuardError {
     ReadOnly,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+/// A GET row matches its payload exactly. A SET row matches its prefix, and the validator must accept the argument bytes after it
+/// (feature tasks add rows; the validator is where each field is range-checked).
+#[derive(Clone, Copy)]
 enum Kind {
     Get,
-    #[allow(dead_code)] // first SET rows arrive with the feature tasks
-    Set,
+    Set(fn(&[u8]) -> bool),
 }
 
 /// A payload the guard has approved. Fields are private so only `check` can build one.
@@ -60,7 +61,6 @@ impl AllowedCommand {
     }
 }
 
-// shortcut: rows match the whole payload exactly; SET rows with arguments need a prefix/pattern matcher, add it with the first feature task.
 const ALLOW: &[(Table, &[u8], Kind)] = &[
     (Table::T1, &[0x00, 0x00], Kind::Get), // CONNECT_GET_PROTOCOL_INFO
     (Table::T1, &[0x02, 0x00], Kind::Get), // CONNECT_GET_CAPABILITY_INFO
@@ -70,35 +70,39 @@ const ALLOW: &[(Table, &[u8], Kind)] = &[
     (Table::T1, &[0x06, 0x00], Kind::Get), // CONNECT_GET_SUPPORT_FUNCTION
     (Table::T2, &[0x06, 0x00], Kind::Get), // Table 2 support functions
     // read-only feature GETs issued by --probe (src/probe.rs)
-    (Table::T1, &[0x22, 0x00], Kind::Get), // battery level (feature row, src/device/battery.rs)
-    (Table::T1, &[0x22, 0x08], Kind::Get), // battery level with threshold
-    (Table::T1, &[0x66, 0x19], Kind::Get), // NC/ASM noise adaptation
-    (Table::T1, &[0x66, 0x17], Kind::Get), // NC/ASM
-    (Table::T1, &[0x66, 0x22], Kind::Get), // ASM only
-    (Table::T1, &[0x5A, 0x00], Kind::Get), // EQ band frequencies
-    (Table::T1, &[0x56, 0x00], Kind::Get), // EQ parameters
-    (Table::T1, &[0x52, 0x00], Kind::Get), // EQ status
-    (Table::T1, &[0xE6, 0x01], Kind::Get), // DSEE parameter
-    (Table::T1, &[0xE2, 0x01], Kind::Get), // DSEE status
-    (Table::T1, &[0xF6, 0x0C], Kind::Get), // speak-to-chat enable
-    (Table::T1, &[0xFA, 0x0C], Kind::Get), // speak-to-chat sensitivity
-    (Table::T1, &[0x20, 0x04], Kind::Get), // auto power-off capability
-    (Table::T1, &[0x26, 0x04], Kind::Get), // auto power-off parameter
-    (Table::T1, &[0x20, 0x05], Kind::Get), // auto power-off (wearing) capability
-    (Table::T1, &[0x26, 0x05], Kind::Get), // auto power-off (wearing) parameter
-    (Table::T1, &[0xF6, 0x01], Kind::Get), // auto pause on removal
-    (Table::T1, &[0x12, 0x02], Kind::Get), // codec indicator
-    (Table::T1, &[0xD6, 0x01], Kind::Get), // general setting 1
-    (Table::T1, &[0xD6, 0x02], Kind::Get), // general setting 2
-    (Table::T1, &[0xD6, 0x03], Kind::Get), // general setting 3
-    (Table::T1, &[0xD6, 0x04], Kind::Get), // general setting 4
-    (Table::T2, &[0xF2, 0x00], Kind::Get), // wearing status
-    (Table::T2, &[0x36, 0x01], Kind::Get), // multipoint (source switch control)
-    (Table::T2, &[0x36, 0x02], Kind::Get), // paired device list
-    (Table::T2, &[0x32, 0x02], Kind::Get), // pairing mode status
-    (Table::T2, &[0x5A, 0x00], Kind::Get), // safe listening HBS_1
-    (Table::T2, &[0x5A, 0x02], Kind::Get), // safe listening HBS_2
+    (Table::T1, &[0x22, 0x00], Kind::Get),              // battery level (feature row, src/device/battery.rs)
+    (Table::T1, &[0x22, 0x08], Kind::Get),              // battery level with threshold
+    (Table::T1, &[0x66, 0x19], Kind::Get),              // NC/ASM noise adaptation (feature row, src/device/ncasm.rs)
+    (Table::T1, &[0x68, 0x19], Kind::Set(nc_set_args)), // NC/ASM SET
+    (Table::T1, &[0x5A, 0x00], Kind::Get),              // EQ band frequencies
+    (Table::T1, &[0x56, 0x00], Kind::Get),              // EQ parameters
+    (Table::T1, &[0x52, 0x00], Kind::Get),              // EQ status
+    (Table::T1, &[0xE6, 0x01], Kind::Get),              // DSEE parameter
+    (Table::T1, &[0xE2, 0x01], Kind::Get),              // DSEE status
+    (Table::T1, &[0xF6, 0x0C], Kind::Get),              // speak-to-chat enable
+    (Table::T1, &[0xFA, 0x0C], Kind::Get),              // speak-to-chat sensitivity
+    (Table::T1, &[0x20, 0x04], Kind::Get),              // auto power-off capability
+    (Table::T1, &[0x26, 0x04], Kind::Get),              // auto power-off parameter
+    (Table::T1, &[0x20, 0x05], Kind::Get),              // auto power-off (wearing) capability
+    (Table::T1, &[0x26, 0x05], Kind::Get),              // auto power-off (wearing) parameter
+    (Table::T1, &[0xF6, 0x01], Kind::Get),              // auto pause on removal
+    (Table::T1, &[0x12, 0x02], Kind::Get),              // codec indicator
+    (Table::T1, &[0xD6, 0x01], Kind::Get),              // general setting 1
+    (Table::T1, &[0xD6, 0x02], Kind::Get),              // general setting 2
+    (Table::T1, &[0xD6, 0x03], Kind::Get),              // general setting 3
+    (Table::T1, &[0xD6, 0x04], Kind::Get),              // general setting 4
+    (Table::T2, &[0xF2, 0x00], Kind::Get),              // wearing status
+    (Table::T2, &[0x36, 0x01], Kind::Get),              // multipoint (source switch control)
+    (Table::T2, &[0x36, 0x02], Kind::Get),              // paired device list
+    (Table::T2, &[0x32, 0x02], Kind::Get),              // pairing mode status
+    (Table::T2, &[0x5A, 0x00], Kind::Get),              // safe listening HBS_1
+    (Table::T2, &[0x5A, 0x02], Kind::Get),              // safe listening HBS_2
 ];
+
+/// The 7 bytes of an NC/ASM `68 19` SET (also used to check replies): valueChange, totalEffect, mode, ambientMode, level 1..=20, autoAsm, sensitivity.
+pub fn nc_set_args(a: &[u8]) -> bool {
+    matches!(a, [0..=1, 0..=1, 0..=1, 0..=1, 1..=20, 0..=1, 0..=2])
+}
 
 fn denied(table: Table, p: &[u8]) -> bool {
     let at = |i: usize| p.get(i).copied();
@@ -132,10 +136,17 @@ fn check_in(allow: &[Row], table: Table, payload: &[u8], mode: Mode) -> Result<A
     if denied(table, payload) {
         return Err(GuardError::Denied);
     }
-    let Some(&(_, _, kind)) = allow.iter().find(|(t, p, _)| *t == table && *p == payload) else {
+    let matches = |&&(t, p, kind): &&Row| {
+        t == table
+            && match kind {
+                Kind::Get => p == payload,
+                Kind::Set(valid) => payload.starts_with(p) && valid(&payload[p.len()..]),
+            }
+    };
+    let Some(&(_, _, kind)) = allow.iter().find(matches) else {
         return Err(GuardError::NotAllowed);
     };
-    if mode == Mode::ReadOnly && kind != Kind::Get {
+    if mode == Mode::ReadOnly && !matches!(kind, Kind::Get) {
         return Err(GuardError::ReadOnly);
     }
     Ok(AllowedCommand { table, payload: payload.to_vec() })
@@ -200,7 +211,7 @@ mod tests {
 
     #[test]
     fn handshake_gets_accepted() {
-        for (table, payload, _) in ALLOW {
+        for (table, payload, _) in ALLOW.iter().filter(|r| matches!(r.2, Kind::Get)) {
             let c = check(*table, payload, Mode::Normal).unwrap();
             assert_eq!((c.table(), c.payload()), (*table, *payload));
             assert!(check(*table, payload, Mode::ReadOnly).is_ok());
@@ -209,14 +220,15 @@ mod tests {
 
     #[test]
     fn read_only_rejects_sets() {
-        // no SET rows exist yet, so use a synthetic allowlist
-        let rows: &[Row] = &[(Table::T1, &[0x58, 0x00], Kind::Set), (Table::T1, &[0x56, 0x00], Kind::Get)];
-        assert!(check_in(rows, Table::T1, &[0x58, 0x00], Mode::Normal).is_ok());
-        assert_eq!(check_in(rows, Table::T1, &[0x58, 0x00], Mode::ReadOnly).unwrap_err(), GuardError::ReadOnly);
+        let rows: &[Row] = &[(Table::T1, &[0x58, 0x00], Kind::Set(|a| a == [1])), (Table::T1, &[0x56, 0x00], Kind::Get)];
+        assert!(check_in(rows, Table::T1, &[0x58, 0x00, 1], Mode::Normal).is_ok());
+        assert_eq!(check_in(rows, Table::T1, &[0x58, 0x00, 2], Mode::Normal).unwrap_err(), GuardError::NotAllowed);
+        assert_eq!(check_in(rows, Table::T1, &[0x58, 0x00, 1], Mode::ReadOnly).unwrap_err(), GuardError::ReadOnly);
         assert!(check_in(rows, Table::T1, &[0x56, 0x00], Mode::ReadOnly).is_ok());
         // denylist still wins over an allowlist row
-        let bad: &[Row] = &[(Table::T1, &[0x30, 0x00], Kind::Get)];
+        let bad: &[Row] = &[(Table::T1, &[0x30, 0x00], Kind::Get), (Table::T1, &[0x64], Kind::Set(|_| true))];
         assert_eq!(check_in(bad, Table::T1, &[0x30, 0x00], Mode::Normal).unwrap_err(), GuardError::Denied);
+        assert_eq!(check_in(bad, Table::T1, &[0x64, 0x01], Mode::Normal).unwrap_err(), GuardError::Denied);
     }
 
     #[test]

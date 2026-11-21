@@ -101,7 +101,18 @@ fn device_cli(args: &[String], device: Option<&str>) -> Result<(), String> {
     let after = |flag: &str, n: usize| args.iter().position(|a| a == flag).and_then(|i| args.get(i + n)).filter(|v| !v.starts_with("--"));
     let (command, linger) = if let Some(feature) = after("--set", 1) {
         let value = after("--set", 2).ok_or("--set needs <feature> <value>")?;
-        (Some(Command::Set { feature: feature.clone(), value: value.clone() }), Duration::from_secs(3))
+        // the value plus any `--option value` pairs after it (e.g. `nc ambient --level 5`), minus `--device <mac>`
+        let i = args.iter().position(|a| a == "--set").unwrap_or(0) + 2;
+        let mut rest = args[i + 1..].iter();
+        let mut text = vec![value.as_str()];
+        while let Some(a) = rest.next() {
+            if a == "--device" {
+                rest.next();
+            } else {
+                text.push(a);
+            }
+        }
+        (Some(Command::Set { feature: feature.clone(), value: text.join(" ") }), Duration::from_secs(3))
     } else if let Some(i) = args.iter().position(|a| a == "--watch") {
         (None, Duration::from_secs(args.get(i + 1).and_then(|v| v.parse().ok()).unwrap_or(60)))
     } else {

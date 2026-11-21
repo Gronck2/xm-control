@@ -6,6 +6,7 @@ pub struct DeviceState {
     pub battery: Option<super::battery::Battery>,
     /// A battery NTFY has been seen, so the fallback re-read stops.
     pub battery_notified: bool,
+    pub nc: Option<super::ncasm::NcAsm>,
     /// Payload (after the two id bytes) of the last frame the test feature accepted.
     #[cfg(test)]
     pub dummy: Option<Vec<u8>>,

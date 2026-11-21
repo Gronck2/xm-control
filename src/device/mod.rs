@@ -7,6 +7,7 @@ pub mod feature;
 pub mod handshake;
 #[cfg(test)]
 pub mod mock;
+pub mod ncasm;
 pub mod state;
 
 use crate::bt::{MDR_V2_UUID, parse_guid, winsock::WinsockRfcomm};
@@ -20,7 +21,7 @@ use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::time::{Duration, Instant};
 
 /// All features, in sync order. Feature tasks add one line each.
-pub static FEATURES: &[&dyn Feature] = &[&battery::BatteryFeature];
+pub static FEATURES: &[&dyn Feature] = &[&battery::BatteryFeature, &ncasm::NcAsmFeature];
 
 /// How long the worker waits for incoming frames between checks of the command channel.
 /// shortcut: a command can wait up to this long before it is sent; fine for button-driven UIs, use a wakeable transport read if it ever matters.
@@ -238,7 +239,7 @@ impl Worker {
                 }
             }
             Some(v) => {
-                let (table, payload) = f.encode_set(v).map_err(CommandError::BadValue)?;
+                let (table, payload) = f.encode_set(&self.state, v).map_err(CommandError::BadValue)?;
                 let cmd = check(table, &payload, Mode::Normal).map_err(CommandError::Guard)?;
                 s.send(&cmd)?;
                 // the new value arrives as a reply or NTFY; the state is not guessed
@@ -320,7 +321,7 @@ mod tests {
             state.dummy = Some(rest.to_vec());
             Parsed::Changed
         }
-        fn encode_set(&self, value: &str) -> Result<(Table, Vec<u8>), String> {
+        fn encode_set(&self, _: &DeviceState, value: &str) -> Result<(Table, Vec<u8>), String> {
             match value {
                 "ping" => Ok((Table::T1, PING.to_vec())),
                 "die" => Ok((Table::T1, DIE.to_vec())),
@@ -345,7 +346,7 @@ mod tests {
         fn on_frame(&self, _: &mut DeviceState, _: Table, _: &[u8]) -> Parsed {
             Parsed::NotMine
         }
-        fn encode_set(&self, _: &str) -> Result<(Table, Vec<u8>), String> {
+        fn encode_set(&self, _: &DeviceState, _: &str) -> Result<(Table, Vec<u8>), String> {
             Ok((Table::T1, vec![0x22, 0x00]))
         }
     }
