@@ -62,7 +62,7 @@ fn unescape(bytes: &[u8]) -> Result<Vec<u8>, FrameError> {
     Ok(out)
 }
 
-fn pack_raw(data_type: u8, seq: u8, payload: &[u8]) -> Result<Vec<u8>, FrameError> {
+pub(crate) fn pack_raw(data_type: u8, seq: u8, payload: &[u8]) -> Result<Vec<u8>, FrameError> {
     let mut body = vec![data_type, seq];
     body.extend((payload.len() as u32).to_be_bytes());
     body.extend(payload);
