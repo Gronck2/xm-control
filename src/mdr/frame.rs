@@ -76,6 +76,12 @@ fn pack_raw(data_type: u8, seq: u8, payload: &[u8]) -> Result<Vec<u8>, FrameErro
     Ok(out)
 }
 
+/// Test-only access to arbitrary frames (session tests); never compiled into the binary.
+#[cfg(test)]
+pub(crate) fn pack_raw_for_tests(data_type: u8, seq: u8, payload: &[u8]) -> Result<Vec<u8>, FrameError> {
+    pack_raw(data_type, seq, payload)
+}
+
 /// Packs a guard-approved command. This is the only way to build a command frame.
 pub fn pack_command(cmd: &AllowedCommand, seq: u8) -> Result<Vec<u8>, FrameError> {
     pack_raw(cmd.table().data_type(), seq, cmd.payload())

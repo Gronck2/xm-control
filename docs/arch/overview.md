@@ -1,11 +1,17 @@
 # Architecture overview
 
-Current shape: `src/main.rs` prints the version. There is a hardware-free protocol layer in `src/mdr/`; there is no Bluetooth transport or UI yet.
+Current shape: `src/main.rs` prints the version or runs `--connect-test`. There is a hardware-free protocol layer in `src/mdr/` and a Windows Bluetooth transport in `src/bt/`; no UI yet.
 
 Layers built so far:
 - `src/mdr/frame.rs`: MDR frame pack/unpack (escaping, checksum, 2048-byte limit) and a streaming `FrameParser` that drops bad frames and resyncs on `3E`.
 - `src/mdr/guard.rs`: the command guard. `check(table, payload, mode)` is the only producer of `AllowedCommand`, and `frame::pack_command` accepts only that type
   (denylist first, then allowlist, unknown rejected; see ADR 0003). Incoming frames are not filtered.
+
+- `src/mdr/session.rs`: `trait Transport` (read with timeout / write / close) and `Session`: stop-and-wait send with ACK wait 1000 ms, up to 10 tries with the same seq,
+  ACK for every received T1/T2 frame, unsolicited frames queued (`poll_notifications`), `request` waits 5000 ms for a reply. Blocking; one worker thread is meant to own it.
+- `src/bt/`: `enumerate.rs` lists paired devices (Win32 `BluetoothFindFirstRadio/Device`); `winsock.rs` is the `AF_BTH` RFCOMM `Transport` (V2 UUID, port 0 via SDP,
+  authenticate + encrypt, connect with timeout); `windows-sys` is the only Win32 dependency (ADR 0002).
+- `xm-control --connect-test [--device <mac>]`: connects, prints, closes; sends no MDR command. Without `--device` it picks the single paired `WH-1000XM*`.
 
 Intended shape (not built yet): a Windows window app that opens an RFCOMM connection to Sony WH-1000XM6 headphones,
 speaks Sony's MDR protocol (framing, ACKs, get/set/notify commands) and shows the headphone settings in one window.
