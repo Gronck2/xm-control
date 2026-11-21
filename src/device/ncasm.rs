@@ -63,12 +63,13 @@ impl NcAsm {
     }
 }
 
-/// The 7 bytes after the two id bytes of a RET/NTFY (valueChange is not kept). Anything outside its enum is an error, not clamped.
+/// The bytes after the two id bytes of a RET/NTFY (valueChange is not kept). Loose on purpose: raw level and sens are kept and trailing bytes ignored,
+/// so a device frame never gets lost; `encode_set` refuses to send an out-of-range stored value.
 fn parse(args: &[u8]) -> Result<NcAsm, String> {
-    if !crate::mdr::guard::nc_set_args(args) {
-        return Err(format!("NC/ASM payload is not 7 in-range value bytes: {args:02X?}"));
-    }
-    Ok(NcAsm { effect: args[1] == 1, asm: args[2] == 1, voice: args[3] == 1, level: args[4], auto: args[5] == 1, sens: args[6] })
+    let [_, effect, asm, voice, level, auto, sens, ..] = *args else {
+        return Err(format!("NC/ASM payload is shorter than 7 bytes: {args:02X?}"));
+    };
+    Ok(NcAsm { effect: effect == 1, asm: asm == 1, voice: voice == 1, level, auto: auto == 1, sens })
 }
 
 fn on_off(v: &str) -> Result<bool, String> {
@@ -118,18 +119,27 @@ impl Feature for NcAsmFeature {
 
     fn on_frame(&self, state: &mut DeviceState, table: Table, payload: &[u8]) -> Parsed {
         let (Table::T1, [RET | NTFY, TYPE, args @ ..]) = (table, payload) else { return Parsed::NotMine };
-        // a malformed frame is reported as unhandled
-        let Ok(v) = parse(args) else { return Parsed::NotMine };
-        if state.nc == Some(v) {
+        // an unusable frame makes the stored value stale: forget it so no SET is built from it
+        let v = match parse(args) {
+            Ok(v) => Some(v),
+            Err(_) if state.nc.is_none() => return Parsed::Unchanged,
+            Err(_) => None,
+        };
+        if state.nc == v {
             return Parsed::Unchanged;
         }
-        state.nc = Some(v);
+        state.nc = v;
         Parsed::Changed
     }
 
     fn encode_set(&self, state: &DeviceState, value: &str) -> Result<(Table, Vec<u8>), String> {
         let base = state.nc.ok_or("noise cancelling state is not known yet")?;
-        Ok((Table::T1, apply(base, value)?.encode(true)))
+        let set = apply(base, value)?.encode(true);
+        // the stored value may be out of range (loose parse): never send it, the user must set that field
+        if !crate::mdr::guard::nc_set_args(&set[2..]) {
+            return Err("the headset reported a value outside the supported range; set --level and --sens explicitly".into());
+        }
+        Ok((Table::T1, set))
     }
 }
 
@@ -141,15 +151,23 @@ const DRAG_GAP: Duration = Duration::from_millis(100);
 #[derive(Default)]
 pub struct Drag {
     last: Option<Instant>,
+    pending: Option<NcAsm>,
 }
 
 #[allow(dead_code)] // used by the UI, which does not exist yet
 impl Drag {
-    /// The UNDER_CHANGING SET to send now, or `None` if the previous one is too recent (the latest value goes out later or with `release`).
+    /// The UNDER_CHANGING SET to send now, or `None` if the previous one is too recent: the value is kept and `poll` (or `release`) sends it.
     pub fn update(&mut self, now: Instant, v: &NcAsm) -> Option<Vec<u8>> {
+        self.pending = Some(*v);
+        self.poll(now)
+    }
+
+    /// The kept value once the gap since the last send has passed. The UI calls this on a timer while dragging.
+    pub fn poll(&mut self, now: Instant) -> Option<Vec<u8>> {
         if self.last.is_some_and(|l| now.duration_since(l) < DRAG_GAP) {
             return None;
         }
+        let v = self.pending.take()?;
         self.last = Some(now);
         Some(v.encode(false))
     }
@@ -157,6 +175,7 @@ impl Drag {
     /// The final CHANGED SET with the latest value; always sent.
     pub fn release(&mut self, v: &NcAsm) -> Vec<u8> {
         self.last = None;
+        self.pending = None;
         v.encode(true)
     }
 }
@@ -205,14 +224,17 @@ mod tests {
     }
 
     #[test]
-    fn parse_rejects_bad_values() {
+    fn parse_is_loose_and_encode_set_refuses_bad_stored_values() {
         assert!(parse(&FIXTURE[..6]).is_err());
-        assert!(parse(&[1, 1, 0, 0, 20, 0, 0, 0]).is_err());
-        for (i, bad) in [(0, 2), (1, 2), (2, 2), (3, 2), (4, 0), (4, 21), (5, 2), (6, 3)] {
-            let mut a = FIXTURE;
-            a[i] = bad;
-            assert!(parse(&a).is_err(), "byte {i} = {bad}");
-        }
+        // trailing bytes ignored, raw level and sens kept
+        let v = parse(&[1, 1, 0, 0, 0, 0, 3, 9, 9]).unwrap();
+        assert_eq!((v.level, v.sens), (0, 3));
+        let state = DeviceState { nc: Some(v), ..Default::default() };
+        assert!(NcAsmFeature.encode_set(&state, "nc").is_err());
+        assert!(NcAsmFeature.encode_set(&state, "nc --level 5").is_err());
+        let ok = NcAsmFeature.encode_set(&state, "nc --level 5 --sens high").unwrap().1;
+        assert_eq!(ok, [0x68, 0x19, 1, 1, 0, 0, 5, 0, 1]);
+        assert!(check(Table::T1, &ok, GMode::Normal).is_ok());
     }
 
     #[test]
@@ -261,11 +283,18 @@ mod tests {
             (Table::T1, &[0x67, 0x17, 1, 1, 0, 0, 20, 0, 0][..]),
             (Table::T1, &[0x69, 0x22, 1, 1, 0, 0, 20, 0, 0]),
             (Table::T2, &[0x67, 0x19, 1, 1, 0, 0, 20, 0, 0]),
-            (Table::T1, &[0x67, 0x19, 1, 1, 0, 0, 21, 0, 0]),
         ] {
             assert_eq!(f.on_frame(&mut s, t, p), Parsed::NotMine);
         }
         assert_eq!(s, before);
+        // an out-of-range but long enough frame is stored as is
+        assert_eq!(f.on_frame(&mut s, Table::T1, &[0x67, 0x19, 1, 1, 0, 0, 0, 0, 7, 5]), Parsed::Changed);
+        assert_eq!(s.nc.map(|v| (v.level, v.sens)), Some((0, 7)));
+        // a too short frame forgets the state, so no SET can be built from it
+        assert_eq!(f.on_frame(&mut s, Table::T1, &[0x69, 0x19, 1, 1]), Parsed::Changed);
+        assert_eq!(s.nc, None);
+        assert!(f.encode_set(&s, "nc").is_err());
+        assert_eq!(f.on_frame(&mut s, Table::T1, &[0x69, 0x19, 1, 1]), Parsed::Unchanged);
     }
 
     #[test]
@@ -337,5 +366,16 @@ mod tests {
         // release always sends the latest value as CHANGED, even right after an update
         assert_eq!(d.release(&v), [0x68, 0x19, 1, 1, 0, 0, 11, 0, 0]);
         assert!(d.update(t0 + Duration::from_millis(130), &v).is_some());
+        // a value dropped by the limit goes out from poll once the window has passed, exactly once
+        v.level = 15;
+        assert!(d.update(t0 + Duration::from_millis(150), &v).is_none());
+        assert!(d.poll(t0 + Duration::from_millis(200)).is_none());
+        assert_eq!(d.poll(t0 + Duration::from_millis(230)).unwrap()[6], 15);
+        assert!(d.poll(t0 + Duration::from_millis(400)).is_none());
+        // release clears the pending value
+        v.level = 16;
+        assert!(d.update(t0 + Duration::from_millis(240), &v).is_none());
+        d.release(&v);
+        assert!(d.poll(t0 + Duration::from_millis(600)).is_none());
     }
 }
