@@ -22,6 +22,16 @@ pub enum SessionError {
     Timeout,
 }
 
+impl std::fmt::Display for SessionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SessionError::Io(e) => write!(f, "I/O error: {e}"),
+            SessionError::Frame(e) => write!(f, "frame error: {e:?}"),
+            SessionError::Timeout => write!(f, "timed out"),
+        }
+    }
+}
+
 impl From<io::Error> for SessionError {
     fn from(e: io::Error) -> Self {
         SessionError::Io(e)
