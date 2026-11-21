@@ -256,6 +256,10 @@ impl App {
 const WINDOW_STYLE: u32 = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    // Only these messages touch the App; others (WM_SIZE, WM_CTLCOLOR*, ... sent re-entrantly from our own calls) must not create a second `&mut App`.
+    if !matches!(msg, WM_COMMAND | WM_DEVICE_EVENT | WM_DPICHANGED | WM_CLOSE | WM_DESTROY | WM_NCDESTROY) {
+        return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
+    }
     // SAFETY: the pointer is set once in `run` to a leaked `App` and cleared in WM_NCDESTROY; only the UI thread gets here.
     let app = unsafe { (GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut App).as_mut() };
     let Some(app) = app else { return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) } };
@@ -271,10 +275,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         },
         WM_DEVICE_EVENT => app.pump(),
         WM_DPICHANGED => {
-            app.dpi = (wparam >> 16) as u32 & 0xFFFF;
             // SAFETY: for WM_DPICHANGED lparam points to the suggested RECT.
             let r = unsafe { *(lparam as *const RECT) };
+            // SetWindowPos re-enters wndproc; every message it sends is passed to DefWindowProcW above without touching `app`.
             unsafe { SetWindowPos(hwnd, null_mut(), r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_NOZORDER | SWP_NOACTIVATE) };
+            app.dpi = (wparam >> 16) as u32 & 0xFFFF;
             app.relayout();
         }
         WM_CLOSE => {

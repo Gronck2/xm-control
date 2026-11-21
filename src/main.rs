@@ -1,5 +1,3 @@
-#![windows_subsystem = "windows"]
-
 mod bt;
 mod device;
 mod mdr;
@@ -20,16 +18,15 @@ const PROBE_LISTEN: Duration = Duration::from_secs(5);
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.is_empty() {
+        release_own_console();
         return match ui::view::run() {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
-                console::attach();
                 eprintln!("error: {e}");
                 ExitCode::FAILURE
             }
         };
     }
-    console::attach();
     let has = |flag: &str| args.iter().any(|a| a == flag);
     if !["--connect-test", "--probe", "--get", "--set", "--watch"].iter().any(|f| has(f)) {
         println!("{}", banner());
@@ -155,28 +152,15 @@ fn device_cli(args: &[String], device: Option<&str>) -> Result<(), String> {
     }
 }
 
-/// The exe is a GUI-subsystem program (no console window when double-clicked), so the CLI flags attach to the parent console.
-mod console {
-    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
-    use windows_sys::Win32::Storage::FileSystem::{CreateFileW, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING};
-    use windows_sys::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole, GetStdHandle, STD_ERROR_HANDLE, STD_OUTPUT_HANDLE, SetStdHandle};
-
-    const GENERIC_WRITE: u32 = 0x4000_0000;
-
-    /// Attaches to the parent's console and points stdout/stderr at it unless they are already redirected (file or pipe).
-    pub fn attach() {
-        let name: Vec<u16> = "CONOUT$\0".encode_utf16().collect();
-        // SAFETY: plain Win32 calls; the CONOUT$ handle is intentionally kept open for the life of the process.
-        unsafe {
-            AttachConsole(ATTACH_PARENT_PROCESS);
-            for std in [STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
-                let h = GetStdHandle(std);
-                if h.is_null() || h == INVALID_HANDLE_VALUE {
-                    let con =
-                        CreateFileW(name.as_ptr(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, std::ptr::null(), OPEN_EXISTING, 0, std::ptr::null_mut());
-                    SetStdHandle(std, con);
-                }
-            }
+/// The exe is a console-subsystem program so shells wait for it. Started from Explorer the console is ours alone: free it before the window opens.
+/// Started from a terminal (other processes share the console) it is left alone.
+fn release_own_console() {
+    use windows_sys::Win32::System::Console::{FreeConsole, GetConsoleProcessList};
+    let mut pid = 0u32;
+    // SAFETY: plain Win32 calls with a valid one-element buffer.
+    unsafe {
+        if GetConsoleProcessList(&mut pid, 1) == 1 {
+            FreeConsole();
         }
     }
 }
