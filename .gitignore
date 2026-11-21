@@ -2,3 +2,4 @@
 CLAUDE.local.md
 /.claude/*
 !/.claude/skills/
+/probe*.txt

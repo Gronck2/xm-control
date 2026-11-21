@@ -1,32 +1,34 @@
 # 0006 Noise cancelling and ambient sound
 
 ## Goal
-Read and set: mode (Off / NC / Ambient), ambient level 1..20, focus on voice, and the auto/adaptive fields where the headset has them. Button-driven changes arrive as notifications.
+Read and set: mode (Off / NC / Ambient), ambient level 1..20, focus on voice, auto ambient and noise-adaptive sensitivity. Button-driven changes arrive as notifications.
 
 ## Why
 The headline feature of the headphones.
 
 ## Scope
-- Function gating (protocol.md §4.2): 0x6D with type `0x19`, else 0x6B with `0x17`, else 0x67 with `0x22` (ambient only). Layouts:
-  `68 19 <valueChange> <totalEffect> <ncAsmMode> <ambientMode> <ambLevel> <autoAsm> <noiseAdaptiveSensitivity>`, the 0x17 variant without the last two bytes, the 0x22 variant `<valueChange> <totalEffect> <ambientMode> <ambLevel>`.
-- GET `66 <type>`, RET `67`, SET `68`, NTFY `69`.
-- Mapping: Off = totalEffect OFF; NC = ON + mode NC; Ambient = ON + mode ASM; focus on voice = ambientMode VOICE; level 1..20; auto ambient = `autoAsm` NcAsmOnOff (OFF 0, ON 1 - note: NOT inverted); `noiseAdaptiveSensitivity` STANDARD/HIGH/LOW if present.
+- One wire variant (settled by the capture): function 0x6D, type `0x19`. GET `66 19`; RET `67 19`, NTFY `69 19`, SET `68 19`:
+  `<valueChange> <totalEffect> <ncAsmMode> <ambientMode> <ambLevel> <autoAsm> <noiseAdaptiveSensitivity>` (7 bytes after `68 19`).
+- Fixture decode: `67 19 01 01 00 00 14 00 00` = CHANGED, total effect ON, mode NC, ambient NORMAL, level 20, auto ambient OFF, sensitivity STANDARD, i.e. NC on; the level is the remembered ambient level and is kept while in NC mode.
+- Mapping: Off = totalEffect OFF (0); NC = ON (1) + mode NC (0); Ambient = ON + mode ASM (1); focus on voice = ambientMode VOICE (1); level 1..20; auto ambient = `autoAsm` NcAsmOnOff (OFF 0, ON 1, **not** inverted); sensitivity STANDARD 0 / HIGH 1 / LOW 2. valueChange UNDER_CHANGING 0 / CHANGED 1.
 - Slider drag: send `valueChange` UNDER_CHANGING while dragging and CHANGED on release; the core rate-limits drag updates (recommend max ~10/s) and always sends the final CHANGED.
 - Always write the full tuple (read-modify-write from current state) so unrelated fields are not reset.
-- Optional: NC/AMB button function (`66 30`/`68 30`, function 0x69) only as read-only display; no editing in the MVP.
-- Dev CLI: `--get nc`, `--set nc <off|nc|ambient> [--level N] [--voice on|off] [--auto on|off]`.
-- Allowlist rows `66 17|19|22` (GET), `68 17|19|22` (SET). `64` stays denied.
+- Dev CLI: `--get nc`, `--set nc <off|nc|ambient> [--level N] [--voice on|off] [--auto on|off] [--sens standard|high|low]`.
+- Allowlist: GET `66 19`; SET `68 19` + 7 validated bytes (each field within its enum, level 1..20). The guard's exact-match rows (see the shortcut note in `src/mdr/guard.rs`) need a small per-row validator for SETs; the first SET feature PR to land adds it, later PRs reuse it. `64` stays denied.
+- **Dropped for XM6:** the 0x6B/`17` and 0x67/`22` variants and their allowlist rows (functions not advertised); the 0x6B/0x6D conflict does not exist on XM6. The NC/AMB button read (`66 30`, function 0x69) is not captured and not part of this task.
 
 ## Out of scope
-Functions `AUTO_NCASM` 0x70 / `ADAPTIVE_CONTROL` 0x71 (the reference has no code for them: unknown semantics), NC test mode, ambient capability steps `60 19` (use the fixed 1..20 range), NC/AMB button editing.
+Function 0x71 ADAPTIVE_CONTROL (advertised, but the reference has no code for it: unknown semantics; ignore its frames), 0x70 AUTO_NCASM (not advertised), NC test mode, ambient capability steps `60 19` (use the fixed 1..20 range), NC/AMB button read and editing.
 
 ## XM6 status
-NC/ambient: **supported** ("new auto ambient level"). Variant `0x19`: **inferred**, confirm from the 0003 capture. Auto ambient and adaptive sensitivity: **gated** (present only in the 0x19 layout). Separate AUTO/ADAPTIVE functions: **unknown**.
+**Confirmed:** type `0x19` is the only NC variant advertised (0x6D present; 0x6B, 0x67 absent), reply layout verified by the capture. SET layout, NTFY `69` and the valid level range 1..20 are reference-derived (unverified on XM6 until the batch 1 hardware check).
+
+## Hardware
+**Sends SET commands** (`68 19`). The PR merges only after the owner confirms the behaviour on the headphones (hardware batch 1).
 
 ## Acceptance
-(a) Unit tests: parse/encode each of the three layouts; mode mapping both directions; level bounds 1..20 enforced (0 and 21 rejected); read-modify-write keeps other fields; NTFY `69` updates state; the combined 0x6B+0x6D case picks the type the capture proves (test the decision once known); denied `64`/test-mode commands still rejected; drag rate limiter emits final CHANGED.
-(b) Owner: set NC / Ambient / Off from the CLI and say what the headphones do (voice prompt, audible change); level 1 vs 20 clearly different; focus-on-voice audibly different; auto ambient and adaptive toggles only if the capture lists them; press the NC/AMB button on the headset and see the NTFY in `--watch`.
+(a) Unit tests, using `tests/fixtures/xm6-probe.txt` for the reply (`67 19 ...`): parse the fixture reply; encode/decode of the full tuple; mode mapping both directions; level bounds 1..20 enforced (0 and 21 rejected); read-modify-write keeps other fields; NTFY `69` updates state; gating from the real XM6 support list; guard accepts valid `68 19 ...` and rejects a wrong length, an out-of-range field, `68 17 ...`, `68 22 ...`; denied `64`/test-mode commands still rejected; drag rate limiter emits final CHANGED.
+(b) Owner: set NC / Ambient / Off from the CLI and say what the headphones do (voice prompt, audible change); level 1 vs 20 clearly different; focus-on-voice audibly different; auto ambient and sensitivity toggles take effect (sensitivity is subtle: confirm the setting reads back); press the NC/AMB button on the headset and see the NTFY in `--watch`. Restore the previous mode afterwards (it was NC, level 20 at capture time).
 
 ## Open owner decisions
-- Whether to expose "auto ambient" and "adaptive sensitivity" if present: recommend yes, behind the gating.
-- Whether the capture shows the 0x6B/0x6D conflict: decide after 0003.
+- Expose "auto ambient" and "adaptive sensitivity": recommend yes (the 0x19 layout carries them; they are always present on XM6).

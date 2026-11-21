@@ -12,6 +12,9 @@ All paths below are relative to the repo root. `T1` = `libmdr/include/mdr/Genera
 > comments (EQ, voice assistant). There is **no recorded XM6 packet capture** in `tests/` (captures exist only
 > for WF-1000XM5, WF-LC900 and WH-1000XM3). So the exact XM6 support-function list is *not* in the repo. Where this
 > report says which variant XM6 uses, it is either stated in the source (cited) or inferred (marked **inferred**).
+>
+> **Update (2026-11-21):** we now have a real XM6 capture (`tests/fixtures/xm6-probe.txt`, firmware 3.1.5). Section 8 records
+> what it settled and **overrides every "inferred", "unknown" and "XM6 ✅" remark in sections 4 and 6**.
 
 ---
 
@@ -127,7 +130,7 @@ Payload bytes are listed as `[cmd, args...]`; T1 = type `0x0C`, T2 = type `0x0E`
 Then, each step gated on the support list:
 - General settings 1..4 (`D1..D4`): `D0 <gs 0x01..0x04> <lang ENGLISH>` and `D6 <gs>` (L42-70). These are the
   device-defined toggles/lists. XM6 "Touch sensor", "Capture voice during a call" and similar are **likely here**
-  (**inferred**; the device sends the name strings).
+  (**inferred**; the device sends the name strings). **Correction (section 8.4):** the `<gs>` byte is `0xD1..0xD4`, not `0x01..0x04`.
 - DSEE capability `E0 01` (L72-74), assignable keys capability `F0 <0x03|0x0E>` (L76-82).
 - Alerts: `94 <FIXED_MESSAGE> 00` (ALERT_SET_STATUS enable) (L84-86).
 - Codec `12 02` (L88-91). Playback `A6 01`, volume `A6 20`, play status `A2 01` (L93-101).
@@ -295,7 +298,7 @@ The T1 command table is `T1:376-530` and the T2 command table is `T2:23-102`. Th
 | T1 | `F8 09 xx` | SYSTEM_SET_PARAM RESET_SETTINGS: `00` settings reset, **`01` FACTORY_RESET** (`T1:9855-9865, 1431-1436`) |
 | T1 | `24 03 FF` | POWER_SET_STATUS FACTORY_POWER_OFF (`T1:1345-1350`). Only `24 03 01` is a normal power off. |
 | T1 | `24 07 …` | POWER_SET_STATUS LINK_CONTROL (`PowerSetStatusLinkControl`); purpose unclear, so avoid |
-| T2 0x0E | `3C <00|02> 02 <mac>` | PERI_SET_EXTENDED_PARAM **UNPAIR** (deletes the pairing) (`T2:1931-1942`, `T2:135-141`) |
+| T2 0x0E | `3C <00|02> 02 <mac>` | PERI_SET_EXTENDED_PARAM **UNPAIR** (deletes the pairing) (`T2:1931-1942`, `T2:135-141`). Task 0011 widens this to every `3C` form. |
 | T2 | `34 <type> 01 …` | Enter pairing (inquiry-scan) mode: disruptive, allow only on explicit user action |
 | T1 | `64` NCASM_SET_STATUS NC_TEST_MODE (`T1:1146` type 0x40), `F4` SYSTEM_SET_STATUS training/test modes (FACE_TAP_TEST_MODE 0x0B, HEAD_GESTURE_TRAINING 0x10) | factory/test modes |
 | T1 | `0F` GET_TEST | test command (`T1:386`) |
@@ -321,6 +324,7 @@ Safe approach: **allowlist** only the GET/SET pairs in §4 instead of denylistin
 - **Unknowns to verify on a real XM6:** the exact T1/T2 support-function list, which battery variant (0x00 vs 0x08), HBS_1 vs HBS_2, whether DSEE and wearing status are advertised,
   and which General Settings slots map to touch sensor / capture voice.
   Tip: dump the `07 00` replies (T1 and T2) once and gate everything on them, the same way the client does.
+  **Settled by the capture in section 8** (except the General Settings slot names).
 
 ---
 
@@ -346,3 +350,159 @@ Safe approach: **allowlist** only the GET/SET pairs in §4 instead of denylistin
 | Windows BLE (WinRT) | `libmdr-bt/src/Windows/ConnectionWindowsBLE.cpp` |
 | Device support notes | `docs/device-support/WH-1000XM6.md`, `WH-1000XM5.md` |
 | Packet captures (no XM6) | `tests/WF-1000XM5-6.1.0`, `tests/WH-1000XM3-4.5.2`, `tests/WF-LC900-*` |
+
+---
+
+## 8. XM6 capture (firmware 3.1.5)
+
+Source: `tests/fixtures/xm6-probe.txt` (our `--probe` dump, anonymised: MAC, unique id, paired-device names and MACs are placeholders),
+taken 2026-11-21 on a WH-1000XM6, firmware 3.1.5, protocol version `0x03003032`, series/color `0x30`/`0x05`, Table 2 enabled.
+Names below come from the reference enums (`V2:104-244` for T1, `V2:255-310` for T2); struct layouts from `T1`/`T2` as cited in section 4.
+"Reference" means read from the source, not seen on the wire. Tests should take their reply bytes from the fixture.
+
+Reading notes:
+- Reply payloads below are the payload only (no frame bytes). `T1` frames use data type `0x0C`, `T2` frames `0x0E`.
+- The headset ACKs every command, so "no reply" means ACKed and then silent (not a lost frame). The probe waited 5 s.
+- **A reply does not have to repeat the request type:** `5A 00` (T2) was answered by `5B 02 ...`. Correlate replies by reply command id, not by echoing the request bytes.
+
+### 8.1 Table 1 support functions (45 entries; priority omitted, 255 = no priority)
+
+| Id | Reference name | MVP use |
+|---|---|---|
+| 0x10 | CONCIERGE_DATA | no |
+| 0x12 | CODEC_INDICATOR | codec read (8.3), no feature task |
+| 0x13 | UPSCALING_INDICATOR | no |
+| 0x14 | BLE_SETUP | no |
+| 0x15 | TUTORIAL_CONTENTS_SELECT_ON_CONCIERGE | no |
+| 0x16 | CONNECTION_ESTABLISHED_TIME | no |
+| 0x17 | UNNECESSARY_AUTO_RECONNECTION | no |
+| 0x19 | PHONE_AND_CONNECTED_DEVICE_INFOMATION_FOR_CLASSIC | no |
+| 0x20 | BATTERY_LEVEL_INDICATOR | 0005 (variant `22 00`) |
+| 0x23 | POWER_OFF | no (power-off-now stays unused) |
+| 0x25 | AUTO_POWER_OFF_WITH_WEARING_DETECTION | 0010 |
+| 0x27 | TANDEM_KEEP_ALIVE | no |
+| 0x34 | FW_UPDATE_MTK_TRANSFER_WITHOUT_DISCONNECTION_AUTO_UPDATE | never (firmware update, denylisted) |
+| 0x41 | HBS_SUPPORTS_A2DP_LEA_UNI_LEA_BROAD_WITH_CTKD | no |
+| 0x42 | CLASSIC_ONLY_LE_CLASSIC_SETTING | no |
+| 0x44 | CHANGE_TANDEM_CONNECTION_PROFILE_FOR_ANDROID | no |
+| 0x56 | TURN_KEY_EQ | no (EQ uses 0x57) |
+| 0x57 | PRESET_EQ_AND_ERRORCODE | 0007 (capability type `04`) |
+| 0x69 | AMBIENT_SOUND_CONTROL_MODE_SELECT (NC/AMB button) | no (not captured) |
+| 0x6D | MODE_NC_ASM_NOISE_CANCELLING_DUAL_AMBIENT_SOUND_MODE_LEVEL_ADJUSTMENT_NOISE_ADAPTATION | 0006 (type `19`) |
+| 0x71 | ADAPTIVE_CONTROL_WITH_PARAMETER_NOTIFICATION | no (reference has no code) |
+| 0x90 | FIXED_MESSAGE (alerts) | no |
+| 0x94 | LE_AUDIO_ALERT_NOTIFICATION | no |
+| 0xA1 | PLAYBACK_CONTROLLER_WITH_CALL_VOLUME_ADJUSTMENT | no |
+| 0xB0 | SAR | no |
+| 0xB2 | GATT_CONNECTABLE | no |
+| 0xB6 | SAR_OPTIMIZATION_ACCEL_TYPE | no |
+| 0xB7 | HEAD_TRACKER_ACCEL_TYPE | no |
+| 0xB8 | INTEGRATED_AUTO_PLAY | no |
+| 0xC1 | ACTION_LOG_NOTIFIER | no |
+| 0xC2 | TIME_SERIES_OPERATIONLOG_NOTIFIER | no |
+| 0xD1 | GENERAL_SETTING_1 | no (see 8.4) |
+| 0xD2 | GENERAL_SETTING_2 | no |
+| 0xD3 | GENERAL_SETTING_3 | no |
+| 0xE2 | UPSCALING_AUTO_OFF (DSEE) | 0008 |
+| 0xE5 | UPMIX_CINEMA | no (listening mode, forbidden) |
+| 0xE6 | LISTENING_OPTION | no (forbidden: reboot hazard) |
+| 0xE7 | CONNECTION_MODE_CLASSIC_AUDIO_LE_AUDIO | no |
+| 0xEB | BGM_MODE_SMALL_MIDDLE_LARGE_AND_ERRORCODE | no (forbidden) |
+| 0xF1 | PLAYBACK_CONTROL_BY_WEARING_REMOVING_HEADPHONE_ON_OFF | 0010 (auto pause) |
+| 0xF4 | VOICE_ASSISTANT_SETTINGS | no |
+| 0xF9 | RESET_SETTINGS | never (`F8 09 xx` is denylisted) |
+| 0xFC | SMART_TALKING_MODE_TYPE2 | 0009 |
+| 0xFD | QUICK_ACCESS | no |
+| 0xFF | HEAD_GESTURE_ON_OFF_TRAINING | no |
+
+Not advertised, so absent on XM6 and not to be implemented: 0x24 AUTO_POWER_OFF (timer), 0x28 BATTERY_LEVEL_WITH_THRESHOLD, 0x6B / 0x67 (older NC variants),
+0x50 / 0x52 / 0x53 (other EQ variants), 0x21/0x22 L-R and case battery, 0xF6 WEARING_STATUS_DETECTOR, 0xD4 GENERAL_SETTING_4.
+
+### 8.2 Table 2 support functions (16 entries)
+
+| Id | Reference name | MVP use |
+|---|---|---|
+| 0x21 | CHARGE_IN_USE | no |
+| 0x23 | USB_SUBMERSION | no |
+| 0x31 | SOURCE_SWITCH_CONTROL (multipoint) | 0011 |
+| 0x33 | PAIRING_DEVICE_MANAGEMENT_WITH_BLUETOOTH_CLASS_OF_DEVICE_CLASSIC_LE | 0011 (list type `02`) |
+| 0x34 | MUSIC_HAND_OVER_SETTING | no |
+| 0x42 | VOICE_GUIDANCE_SETTING_MTK_..._SUPPORT_LANGUAGE_SWITCH_AND_VOLUME_ADJUSTMENT | no |
+| 0x52 | SAFE_LISTENING_HBS_2 | no |
+| 0x54 | SAFE_VOLUME_CONTROL | no |
+| 0x60 | LE_AUDIO_CONNECTION_STATE_NOTIFICATION | no |
+| 0x61 | LE_AUDIO_SWITCH_SUPPORTED_COMPATIBILITY | no |
+| 0x63 | GET_IDENTITY_RESOLVING_KEY | no |
+| 0xF2 | QUICK_ACCESS_EASY_SETTING | no |
+| 0xF5 | SONY_VOICE_ASSISTANT | no |
+| 0xF8 | LINK_AUTO_SWITCH_FOR_HEADSETS | no |
+| 0xF9 | MIC_ON_OFF_BY_HEADPHONE_OPERATION | no |
+| 0xFD | VOICE_ASSISTANT_WITH_SPECIFIC_SETUP_LINK_SUPPORT | no |
+
+Not advertised: 0x30 and 0x32 (other pairing-list variants), 0xF0 WEARING_STATUS_CHECKER, 0x50 SAFE_LISTENING_HBS_1.
+Wearing status (T2 `F2 00`) is still answered; per the reference rule it is queried because T1 0xF1 is advertised (section 4.8).
+
+### 8.3 Decoded feature reads
+
+Polarity key: **OnOff** = `OnOffSettingValue` (ON `00`, OFF `01`); **EnableDisable** (ENABLE `00`, DISABLE `01`); **NcAsmOnOff** (OFF `00`, ON `01`);
+**Upscaling** (OFF `00`, AUTO `01`); **raw** = plain u8 (`01` = on, `00` = off).
+
+| Feature | Command | Reply (payload) | Meaning |
+|---|---|---|---|
+| Protocol info | T1 `00 00` | `01 00 03 00 30 32 00 00` | version `0x03003032`; table 1 ENABLE, table 2 ENABLE |
+| Capability info | T1 `02 00` | `03 00 00 11 <17 ASCII>` | counter 0, unique id (17-char string, private; placeholder in the fixture) |
+| Firmware | T1 `04 02` | `05 02 05 33 2E 31 2E 35` | "3.1.5" |
+| Model | T1 `04 01` | `05 01 0A "WH-1000XM6"` | "WH-1000XM6" |
+| Series / color | T1 `04 03` | `05 03 30 05` | series `0x30`, color `0x05` |
+| Support functions | T1 / T2 `06 00` | `07 00 2D ...` / `07 00 10 ...` | 45 / 16 entries, see 8.1 / 8.2 |
+| Battery | T1 `22 00` | `23 00 61 00` | level 0x61 = **97 %**, NOT_CHARGING. `22 08` not advertised, never sent. Ntfy `25` (reference) |
+| NC / ambient | T1 `66 19` | `67 19 01 01 00 00 14 00 00` | valueChange CHANGED, totalEffect **ON**, mode **NC**, ambientMode NORMAL, ambient level `0x14` = **20**, autoAsm OFF, sensitivity STANDARD. So NC is on; the level is the remembered ambient level. `66 17` / `66 22` not advertised. Ntfy `69` (reference) |
+| EQ band info | T1 `5A 00` | `5B 00 0A` then 10 x `01 <freq u16 BE>` | 10 bands, every entry type HZ (`01`): 31, 63, 125, 250, 500, 1000, 2000, 4000, 8000, 16000 Hz (1 kHz and up are still in Hz: `03 E8` = 1000). The `3E 80` pair in the frame is escaped on the wire (`3D 2E 80`) |
+| EQ parameters | T1 `56 00` | `57 00 32 0A 0A 0A 05 05 06 06 06 08 08 09` | preset `0x32` (HARD in the reference enum), then count `0x0A` and 10 raw steps `0A 0A 05 05 06 06 06 08 08 09`. With offset 6 (reference): +4 +4 -1 -1 0 0 0 +2 +2 +3 dB for 31 Hz ... 16 kHz. The steps are reported for a factory preset too (it is the preset's own curve). Ntfy `59` (reference) |
+| EQ status | T1 `52 00` | **no reply** (ACKed, timed out) | XM6 does not answer EQ status. Do not send it; treat EQ as enabled unless an Ntfy `53`/`55` says otherwise |
+| DSEE parameter | T1 `E6 01` | `E7 01 01` | Upscaling = **AUTO** (DSEE on). Set is `E8 01 <00 OFF | 01 AUTO>`; Ntfy `E9 01 <value>` (reference) |
+| DSEE status | T1 `E2 01` | `E3 01 00` | EnableDisable ENABLE = available (the reference reads `ENABLE` as available). Ntfy `E5 01 <status>` (reference) |
+| Speak-to-Chat enable | T1 `F6 0C` | `F7 0C 01 01` | OnOff `01` = **OFF**, preview OFF. Set `F8 0C <OnOff> <preview>` (preview always `01`); Ntfy `F9 0C <OnOff> <preview>` (reference) |
+| Speak-to-Chat sensitivity | T1 `FA 0C` | `FB 0C 00 01` | sensitivity AUTO (`00`), mode-out time MID (`01`). Set `FC 0C <sens> <time>`; Ntfy `FD 0C ...` (reference) |
+| Auto power-off (timer) | T1 `20 04`, `26 04` | not sent (0x24 not advertised) | no minute timers on XM6 |
+| Auto power-off (wearing), capability | T1 `20 05` | `21 05 02 10 11` | candidate list of 2: `10` POWER_OFF_WHEN_REMOVED_FROM_EARS, `11` DISABLE. No 5/15/30/60/180 min options |
+| Auto power-off (wearing), parameter | T1 `26 05` | `27 05 10 00` | current = `10` (when removed from ears), last-select `00` (5 min, unused). Set `28 05 <current> 00`; Ntfy `29 05 ...` (reference) |
+| Auto pause on removal | T1 `F6 01` | `F7 01 00` | OnOff `00` = **ON**. Set `F8 01 <OnOff>`; Ntfy `F9 01 <OnOff>` (reference) |
+| Codec | T1 `12 02` | `13 02 02` | AAC. Ntfy `15 02 <codec>` (reference) |
+| General settings 1..3 | T1 `D6 01` / `D6 02` / `D6 03` | **no reply** | wrong command: the type byte must be `D1` / `D2` / `D3` (see 8.4). The probe also skipped `D6 04` (GENERAL_SETTING_4 not advertised) |
+| Wearing status | T2 `F2 00` | `F3 00 00` | code NORMAL (`00`). Ntfy `F5 00 <code>` (reference). Codes: 0 NORMAL, 1 ILLEGAL, 2 LEFT_NOT_WEAR, 3 RIGHT_NOT_WEAR, 4 BOTH_NOT_WEAR |
+| Multipoint | T2 `36 01` | `37 01 01` | raw `01` = enabled (the reference reads any non-zero as enabled and sends `1` to enable). Set `38 01 <0|1>`; Ntfy `39 01 <value> <result>` (reference) |
+| Paired device list | T2 `36 02` | `37 02 07 <7 entries> 01` | 7 entries, then the trailing byte `01` (playbackRightDevice, see below). Entry = 17 ASCII MAC, connected u8, class-of-device Int24 BE, length-prefixed name. In the fixture: 1st entry connected `01`, class `2A 41 0C`, name "PC-DDD"; the other six are `00` with class `FF FF FF` (unknown) and names such as "Laptop-AAAA...", "PC-EEE", "Phone-BBBB...", "Phone-CCCC...", "PC-DDD" (the repeats are an anonymisation artefact). Ntfy `39 02 ...`, same layout (reference). MACs in the fixture are the literal text `XX:XX:XX:XX:XX:XX`: validate length 17 and printable ASCII only, not hex |
+| Pairing mode status | T2 `32 02` | `33 02 00 00` | mode NORMAL (`00`), EnableDisable ENABLE. Not in pairing mode (the reference: pairing = ENABLE and mode INQUIRY_SCAN) |
+| Safe listening HBS_1 | T2 `5A 00` | `5B 02 00 03` (arrived as the "unsolicited" frame) | the probe saw a timeout because it waited for `5B 00`. The device answered with type `02` (HBS_2); only 0x52 (HBS_2) is advertised |
+| Safe listening HBS_2 | T2 `5A 02` | `5B 02 00 03` | type HBS_2, level 0 dB, error cause `03` (the reference enum knows only 0 NOT_PLAYING, 1 IN_CALL, 2 DETACHED). Safe listening is not an MVP feature |
+
+Unsolicited frames during the capture: one T2 frame `5B 02 00 03`, which is the late answer to `5A 00`, not a push.
+
+### 8.4 General settings: correct command (not captured yet)
+
+The reference's `GsInquiredType` values are `0xD1..0xD4` (`T1:941-948`), the same numbers as the function ids, so the type byte is `D1`, `D2`, `D3` for XM6 (not `01..03`):
+
+| Purpose | Command | Reply (reference layouts) |
+|---|---|---|
+| Capability | `D0 <D1|D2|D3> 01` (`01` = ENGLISH, `T1:637`) | `D1 <type> <settingType 00 BOOLEAN|01 LIST> <stringFormat> <pstr subject> <pstr summary>` (`T1:4463-4494`) |
+| Status | `D2 <type>` | `D3 <type> <EnableDisable>` (`T1:4547-4558`) |
+| Parameter | `D6 <type>` | boolean: `D7 <type> 00 <OnOff>`; list: `D7 <type> 01 <index 0..63>` (`T1:4511-4543`) |
+| Set | `D8 <type> 00 <OnOff>` / `D8 <type> 01 <index>` (`T1:4575-4606`) | |
+
+These are read-only to learn what the three slots are (touch sensor, capture voice, ...). General settings are not in the MVP; a later task needs
+a probe run with these commands before anything is implemented or sent.
+
+### 8.5 Still uncertain
+
+- **Polarity cross-check against the owner's memory of the headset state at capture time.** Decoded states: NC on (level 20, not focus on voice, auto ambient off),
+  DSEE auto, Speak-to-Chat **off**, auto pause on removal **on**, auto power-off "when removed from ears", multipoint on, codec AAC, battery 97 %, wearing NORMAL.
+  If the owner can say which of these match the Sony app at the time, the OnOff / EnableDisable / raw mappings are proven. Until then they are reference-derived.
+- Wearing code 0 NORMAL: presumably both ear cups worn; not known whether the headset was worn during the probe.
+- EQ: the capability reply (`50 04 01`) and preset names were not requested, so the 13-step / offset-6 assumption and the preset list are reference-only
+  (the observed raw steps 5..10 fit -6..+6). The `52 00` silence means EQ availability cannot be read.
+- Multipoint polarity (`01` = on) and the `playbackRightDevice` byte (the reference compares it with each entry's connected byte, which looks like a quirk) are unproven.
+  Use only the per-entry connected flag for display.
+- Safe listening error cause `03`, and why `5A 00` is answered as HBS_2.
+- Ntfy layouts marked "(reference)" were not seen in the capture. Notification ids come from the command tables (`T1:376-530`, `T2:23-102`).
+- The NC/AMB button (`66 30`, function 0x69) and the unlisted `ADAPTIVE_CONTROL` (0x71) payloads were not captured.

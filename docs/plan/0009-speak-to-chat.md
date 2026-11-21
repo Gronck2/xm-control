@@ -5,9 +5,9 @@
 
 ## Steps
 1. `values::OnOff` (ON=0x00, OFF=0x01) with tests, enums for sensitivity and timeout.
-2. Parsers for the two RETs and NTFYs, encoders for `F8 0C` and `FC 0C`.
-3. Registration, CLI, guard rows + `F8 09` denial test.
-4. Owner checklist.
+2. Parsers for `F7 0C`, `FB 0C` and the NTFYs `F9 0C`, `FD 0C`; encoders for `F8 0C` and `FC 0C` (tests use the fixture bytes).
+3. Registration (gated on 0xFC), CLI, guard rows with validators + `F8 09` denial test.
+4. Owner checklist (batch 2).
 
 ## Files likely touched
 `src/device/stc.rs`, `src/mdr/values.rs`, `src/device/mod.rs`, `src/mdr/guard.rs`, `src/main.rs`.
