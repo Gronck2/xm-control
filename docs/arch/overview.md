@@ -1,6 +1,6 @@
 # Architecture overview
 
-Current shape: `src/main.rs` prints the version or runs `--connect-test`, `--probe` or the device dev CLI (`--get`, `--set`, `--watch`). There is a hardware-free protocol layer in `src/mdr/` and a Windows Bluetooth transport in `src/bt/`; no UI yet.
+Current shape: `src/main.rs` opens the window when started without arguments, otherwise runs `--connect-test`, `--probe` or the device dev CLI (`--get`, `--set`, `--watch`). There is a hardware-free protocol layer in `src/mdr/`, a Windows Bluetooth transport in `src/bt/`, the device worker in `src/device/` and the window UI in `src/ui/`.
 
 Layers built so far:
 - `src/mdr/frame.rs`: MDR frame pack/unpack (escaping, checksum, 2048-byte limit) and a streaming `FrameParser` that drops bad frames and resyncs on `3E`.
@@ -20,8 +20,11 @@ Layers built so far:
   `mpsc`. `trait Feature` (support-list gate, initial GETs, frame parser, SET encoder) is registered in the static `FEATURES` slice (battery registered; the rest come with tasks 0006-0011). No auto-reconnect.
 - Dev CLI: `--get [feature]` (device info and state after the initial sync), `--set <feature> <value>`, `--watch [secs]` (event log); all take `--device <mac>`. Sends nothing but the read-only sync until a feature exists.
 
-Layers, top to bottom: UI / dev CLI -> `device` worker (state, events) -> `mdr::session` (ACK, seq, retry) -> `mdr::guard` + `mdr::frame` -> `bt` transport.
+Layers, top to bottom: UI (`src/ui`) / dev CLI -> `device` worker (state, events) -> `mdr::session` (ACK, seq, retry) -> `mdr::guard` + `mdr::frame` -> `bt` transport.
 
-Intended shape (not built yet): a Windows window app that opens an RFCOMM connection to Sony WH-1000XM6 headphones,
-speaks Sony's MDR protocol (framing, ACKs, get/set/notify commands) and shows the headphone settings in one window.
-The UI stack is decided in ADR 0002.
+- `src/ui/`: the window (task 0012, ADR 0002). `model.rs` is plain Rust: `Model::apply(Event)` and `Model::view() -> ViewState` (status text, button label, enabled flags, model/firmware, masked MAC, battery row hidden when the headset has none); unit-tested.
+  `view.rs` is the Win32 layer: one fixed-size, per-monitor-v2 DPI-aware window of native controls (device combo from `bt::enumerate`, Refresh, Connect/Disconnect, status line, a "Device" info group, empty "Sound" and "Controls"
+  group boxes reserved for tasks 0013/0014). Connect calls `DeviceHandle::connect` (the connect itself runs in the worker thread); the wake callback does `PostMessageW(WM_APP + 1)` and the window drains the event channel.
+  Disconnect drops the handle and waits for the worker's `Disconnected`; closing the window does the same with a 1.5 s cap. The UI sends no SET commands yet; no tray, no auto-reconnect; the MAC is masked until "Show".
+- Build: `build.rs` embeds `app.manifest` (comctl32 v6, PerMonitorV2) with no build dependency: MSVC via `/MANIFEST:EMBED`, GNU via `windres` (the object is named `default-manifest.o` and put on a `-B` path so it replaces gcc's own default manifest).
+  The exe uses the GUI subsystem; CLI flags call `AttachConsole(ATTACH_PARENT_PROCESS)` and re-point stdout/stderr at the console unless they are redirected.
