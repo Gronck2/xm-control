@@ -42,10 +42,11 @@ fn set_opt<T>(sock: SOCKET, level: i32, name: i32, value: &T) -> io::Result<()> 
     if r == SOCKET_ERROR { Err(last_error()) } else { Ok(()) }
 }
 
-fn set_blocking(sock: SOCKET, blocking: bool) {
+fn set_blocking(sock: SOCKET, blocking: bool) -> io::Result<()> {
     let mut nb = u32::from(!blocking);
     // SAFETY: valid socket and pointer.
-    unsafe { ioctlsocket(sock, FIONBIO, &mut nb) };
+    let r = unsafe { ioctlsocket(sock, FIONBIO, &mut nb) };
+    if r == SOCKET_ERROR { Err(last_error()) } else { Ok(()) }
 }
 
 impl WinsockRfcomm {
@@ -73,7 +74,7 @@ impl WinsockRfcomm {
         let on: u32 = 1;
         set_opt(sock, SOL_RFCOMM as i32, SO_BTH_AUTHENTICATE as i32, &on)?;
         set_opt(sock, SOL_RFCOMM as i32, SO_BTH_ENCRYPT as i32, &on)?;
-        set_blocking(sock, false);
+        set_blocking(sock, false)?;
         let addr = SOCKADDR_BTH { addressFamily: AF_BTH, btAddr: mac, serviceClassId: uuid, port: 0 };
         // SAFETY: `addr` is a valid SOCKADDR_BTH of the given length.
         let r = unsafe { connect(sock, &addr as *const SOCKADDR_BTH as *const SOCKADDR, size_of::<SOCKADDR_BTH>() as i32) };
@@ -88,12 +89,15 @@ impl WinsockRfcomm {
             let mut code: i32 = 0;
             let mut len = size_of::<i32>() as i32;
             // SAFETY: valid out-pointers of the stated size.
-            unsafe { getsockopt(sock, SOL_SOCKET, SO_ERROR, &mut code as *mut i32 as *mut u8, &mut len) };
+            let r = unsafe { getsockopt(sock, SOL_SOCKET, SO_ERROR, &mut code as *mut i32 as *mut u8, &mut len) };
+            if r == SOCKET_ERROR {
+                return Err(last_error());
+            }
             if code != 0 {
                 return Err(io::Error::from_raw_os_error(code));
             }
         }
-        set_blocking(sock, true); // reads are gated by select, writes by SO_SNDTIMEO
+        set_blocking(sock, true)?; // reads are gated by select, writes by SO_SNDTIMEO
         set_opt(sock, SOL_SOCKET, SO_SNDTIMEO, &5000u32)?;
         Ok(s)
     }

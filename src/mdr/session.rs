@@ -87,12 +87,13 @@ impl<T: Transport> Session<T> {
     /// Sends a command, then waits for the reply frame of the same table whose first payload byte is `reply_id`.
     /// Other frames stay queued for `poll_notifications`.
     pub fn request(&mut self, cmd: &AllowedCommand, reply_id: u8) -> Result<Frame, SessionError> {
+        let first_new = self.queue.len(); // frames queued before this send can't be its reply
         self.send(cmd)?;
         let data_type = cmd.table().data_type();
         let deadline = Instant::now() + self.timeouts.response;
         loop {
-            if let Some(i) = self.queue.iter().position(|f| f.data_type == data_type && f.payload.first() == Some(&reply_id)) {
-                return Ok(self.queue.remove(i).expect("index just found"));
+            if let Some(i) = self.queue.iter().skip(first_new).position(|f| f.data_type == data_type && f.payload.first() == Some(&reply_id)) {
+                return Ok(self.queue.remove(first_new + i).expect("index just found"));
             }
             if Instant::now() >= deadline {
                 return Err(SessionError::Timeout);
@@ -133,7 +134,7 @@ impl<T: Transport> Session<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mdr::frame::pack_raw;
+    use crate::mdr::frame::pack_raw_for_tests as pack_raw;
     use crate::mdr::guard::{Mode, Table, check};
 
     enum Step {
@@ -278,6 +279,16 @@ mod tests {
         let f = s.request(&cmd(&[0, 0]), 0x01).unwrap();
         assert_eq!(f.payload, vec![0x01, 0x00, 0xAA]);
         assert_eq!(s.poll_notifications(Duration::from_millis(1)).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn request_ignores_stale_reply_queued_before_send() {
+        let mut s = session(vec![vec![data(pack_ack(1))]]);
+        s.transport.inbox.push_back(data(pack_raw(TYPE_T1, 0, &[0x01, 0x00, 0xEE]).unwrap()));
+        s.pump(Instant::now() + Duration::from_millis(5), false).unwrap();
+        assert_eq!(s.queue.len(), 1);
+        assert!(matches!(s.request(&cmd(&[0, 0]), 0x01), Err(SessionError::Timeout)));
+        assert_eq!(s.queue.len(), 1); // the stale frame is still there for poll_notifications
     }
 
     #[test]

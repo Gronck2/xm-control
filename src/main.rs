@@ -14,8 +14,17 @@ fn main() -> ExitCode {
         println!("{}", banner());
         return ExitCode::SUCCESS;
     }
-    let device = args.iter().position(|a| a == "--device").and_then(|i| args.get(i + 1));
-    match connect_test(device.map(String::as_str)) {
+    let device = match args.iter().position(|a| a == "--device") {
+        Some(i) => match args.get(i + 1) {
+            Some(v) => Some(v.as_str()),
+            None => {
+                eprintln!("error: --device needs a MAC");
+                return ExitCode::FAILURE;
+            }
+        },
+        None => None,
+    };
+    match connect_test(device) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("error: {e}");

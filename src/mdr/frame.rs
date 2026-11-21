@@ -62,7 +62,7 @@ fn unescape(bytes: &[u8]) -> Result<Vec<u8>, FrameError> {
     Ok(out)
 }
 
-pub(crate) fn pack_raw(data_type: u8, seq: u8, payload: &[u8]) -> Result<Vec<u8>, FrameError> {
+fn pack_raw(data_type: u8, seq: u8, payload: &[u8]) -> Result<Vec<u8>, FrameError> {
     let mut body = vec![data_type, seq];
     body.extend((payload.len() as u32).to_be_bytes());
     body.extend(payload);
@@ -74,6 +74,12 @@ pub(crate) fn pack_raw(data_type: u8, seq: u8, payload: &[u8]) -> Result<Vec<u8>
         return Err(FrameError::TooLarge);
     }
     Ok(out)
+}
+
+/// Test-only access to arbitrary frames (session tests); never compiled into the binary.
+#[cfg(test)]
+pub(crate) fn pack_raw_for_tests(data_type: u8, seq: u8, payload: &[u8]) -> Result<Vec<u8>, FrameError> {
+    pack_raw(data_type, seq, payload)
 }
 
 /// Packs a guard-approved command. This is the only way to build a command frame.
