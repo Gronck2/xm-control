@@ -298,7 +298,7 @@ The T1 command table is `T1:376-530` and the T2 command table is `T2:23-102`. Th
 | T1 | `F8 09 xx` | SYSTEM_SET_PARAM RESET_SETTINGS: `00` settings reset, **`01` FACTORY_RESET** (`T1:9855-9865, 1431-1436`) |
 | T1 | `24 03 FF` | POWER_SET_STATUS FACTORY_POWER_OFF (`T1:1345-1350`). Only `24 03 01` is a normal power off. |
 | T1 | `24 07 …` | POWER_SET_STATUS LINK_CONTROL (`PowerSetStatusLinkControl`); purpose unclear, so avoid |
-| T2 0x0E | `3C <00|02> 02 <mac>` | PERI_SET_EXTENDED_PARAM **UNPAIR** (deletes the pairing) (`T2:1931-1942`, `T2:135-141`). Task 0011 widens this to every `3C` form. |
+| T2 0x0E | `3C <00|02> 02 <mac>` | PERI_SET_EXTENDED_PARAM **UNPAIR** (deletes the pairing) (`T2:1931-1942`, `T2:135-141`). The guard denies every `3C` form (connect, disconnect, source switch too). |
 | T2 | `34 <type> 01 …` | Enter pairing (inquiry-scan) mode: disruptive, allow only on explicit user action |
 | T1 | `64` NCASM_SET_STATUS NC_TEST_MODE (`T1:1146` type 0x40), `F4` SYSTEM_SET_STATUS training/test modes (FACE_TAP_TEST_MODE 0x0B, HEAD_GESTURE_TRAINING 0x10) | factory/test modes |
 | T1 | `0F` GET_TEST | test command (`T1:386`) |
