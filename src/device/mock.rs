@@ -13,6 +13,8 @@ pub struct FakeHeadset {
     pub replies: Vec<(u8, Vec<u8>, Vec<u8>)>,
     /// Answer every other command with `[cmd + 1, arg, 0]`.
     pub generic: bool,
+    /// Commands (payloads) that get an ACK but never a reply; any other command without a reply gets nothing at all.
+    pub no_reply: Vec<Vec<u8>>,
     /// When this T1 command arrives, also push this unsolicited T1 payload.
     pub ntfy_on: Option<(Vec<u8>, Vec<u8>)>,
     pub writes: Rc<RefCell<Vec<Vec<u8>>>>,
@@ -48,6 +50,7 @@ impl FakeHeadset {
                 r(TYPE_T2, &[0x36, 0x02], [&[0x37, 0x02, 0x01][..], b"11:22:33:44:55:66", &[0x01, 0, 0, 0][..], &pstr("Phone")].concat()),
             ],
             generic: true,
+            no_reply: vec![],
             ntfy_on: None,
             writes: Rc::default(),
             inbox: VecDeque::new(),
@@ -76,12 +79,15 @@ impl Transport for FakeHeadset {
         if f.data_type == TYPE_ACK {
             return Ok(());
         }
-        self.inbox.push_back(pack_ack(f.seq ^ 1));
+        let muted = self.no_reply.contains(&f.payload);
         let reply = match self.replies.iter().find(|(dt, c, _)| *dt == f.data_type && *c == f.payload) {
             Some((_, _, r)) => Some(r.clone()),
-            None if self.generic => Some(vec![f.payload[0] + 1, f.payload[1], 0x00]),
+            None if self.generic && !muted => Some(vec![f.payload[0] + 1, f.payload[1], 0x00]),
             None => None,
         };
+        if reply.is_some() || muted {
+            self.inbox.push_back(pack_ack(f.seq ^ 1));
+        }
         for (dt, p) in
             reply.map(|r| (f.data_type, r)).into_iter().chain(self.ntfy_on.iter().filter(|(t, _)| *t == f.payload).map(|(_, n)| (TYPE_T1, n.clone())))
         {

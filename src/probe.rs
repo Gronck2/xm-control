@@ -169,6 +169,7 @@ pub fn run<T: Transport>(transport: T, mac: u64, keep_mac: bool, listen: Duratio
                 continue;
             }
             let (mut lost, mut timed_out) = (false, false);
+            let rx_before = log.borrow().iter().filter(|e| !e.tx).count();
             let outcome = match check(c.table, c.payload, Mode::ReadOnly) {
                 Err(e) => Err(format!("refused by the guard ({e:?})")),
                 Ok(a) => s.request(&a, c.payload[0] + 1).map(|f| show(&f.payload)).map_err(|e| {
@@ -184,7 +185,9 @@ pub fn run<T: Transport>(transport: T, mac: u64, keep_mac: bool, listen: Duratio
                 }
                 Err(e) => {
                     reads.push_str(&format!("  {line}\n      no reply: {e}\n"));
-                    silent = if timed_out { silent + 1 } else { 0 };
+                    // silence = a timeout with nothing received at all (an ACK without a reply is not silence)
+                    let heard = log.borrow().iter().filter(|e| !e.tx).count() > rx_before;
+                    silent = if timed_out && !heard { silent + 1 } else { 0 };
                     if lost {
                         failure = Some(format!("connection lost during {}: {e}", c.name));
                         break;
@@ -368,7 +371,18 @@ mod tests {
         let (report, result) = run(h, 1, false, Duration::from_millis(5), FAST);
         assert_eq!(result.unwrap_err(), "headset stopped answering");
         assert!(report.contains("Result:    headset stopped answering"));
-        assert_eq!(tx_frames(&report).iter().filter(|f| f.data_type != TYPE_ACK).count(), 7 + 2);
+        assert_eq!(tx_frames(&report).iter().filter(|f| f.data_type != TYPE_ACK).count(), 7 + 2 * 3); // no ACK: each silent command is tried 3 times
+    }
+
+    #[test]
+    fn acked_but_unanswered_reads_do_not_abort_the_probe() {
+        let mut h = FakeHeadset::xm6(&ALL_T1, &ALL_T2, true);
+        h.no_reply = vec![vec![0x5A, 0x00], vec![0x56, 0x00]];
+        let (report, result) = run(h, 1, false, Duration::from_millis(5), FAST);
+        result.unwrap();
+        assert!(report.contains("equalizer status (T1 52 00)\n      reply:"));
+        assert!(report.contains("safe listening HBS_2 (T2 5A 02)\n      reply:"));
+        assert!(report.contains("Result:    completed"));
     }
 
     #[test]
