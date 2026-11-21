@@ -212,7 +212,7 @@ impl Model {
     }
 
     /// true when a step SET may go out now (at most one per `STEP_PACE`).
-    fn pace(&mut self, now: Instant) -> bool {
+    pub fn pace(&mut self, now: Instant) -> bool {
         let ok = self.last_step.is_none_or(|t| now.saturating_duration_since(t) >= STEP_PACE);
         if ok {
             self.last_step = Some(now);
@@ -478,6 +478,15 @@ mod tests {
         let mut m = Model::new();
         m.begin_connect("WH-1000XM6".into(), 0xAABBCCDDEE01);
         m
+    }
+
+    #[test]
+    fn pace_allows_one_step_per_interval() {
+        let mut m = Model::new();
+        let t = Instant::now();
+        assert!(m.pace(t));
+        assert!(!m.pace(t + STEP_PACE / 2));
+        assert!(m.pace(t + STEP_PACE));
     }
 
     #[test]

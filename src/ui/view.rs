@@ -387,6 +387,10 @@ impl App {
         // TB_THUMBTRACK is a drag; ENDTRACK / THUMBPOSITION release it; every other code (keys, wheel, page, capture loss) is a final value
         // that auto-repeats, so the model paces it and the next ENDTRACK or the timer flushes the last one. The model drops duplicate SETs.
         let now = Instant::now();
+        // a paced step on another slider would otherwise never be flushed: release it first
+        if let Some(prev) = self.step_slider.filter(|&p| p != slider) {
+            self.on_scroll(TB_ENDTRACK, prev);
+        }
         let (drag, end) = (code == TB_THUMBTRACK, matches!(code, TB_ENDTRACK | TB_THUMBPOSITION));
         self.step_slider = (!drag && !end).then_some(slider);
         if slider == self.level_slider {
@@ -413,10 +417,14 @@ impl App {
 
     /// The timer: flush the value of a paced step that no ENDTRACK followed, and drop edits the headset never answered.
     fn tick(&mut self) {
-        if let Some(s) = self.step_slider {
+        let now = Instant::now();
+        // the flush is a SET too: keep it inside the pace so a held key stays at one SET per STEP_PACE
+        if let Some(s) = self.step_slider
+            && self.model.pace(now)
+        {
             self.on_scroll(TB_ENDTRACK, s);
         }
-        if self.model.expire(Instant::now()) {
+        if self.model.expire(now) {
             self.render();
         }
     }
