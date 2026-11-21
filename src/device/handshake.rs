@@ -172,7 +172,7 @@ mod tests {
     fn run(h: FakeHeadset) -> (Result<DeviceInfo, HandshakeError>, Vec<Vec<u8>>) {
         let writes = h.writes.clone();
         let r = handshake(&mut Session::new(h, FAST));
-        let w = writes.borrow().clone();
+        let w = writes.lock().unwrap().clone();
         (r, w)
     }
 

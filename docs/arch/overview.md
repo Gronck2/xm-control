@@ -1,6 +1,6 @@
 # Architecture overview
 
-Current shape: `src/main.rs` prints the version or runs `--connect-test` or `--probe`. There is a hardware-free protocol layer in `src/mdr/` and a Windows Bluetooth transport in `src/bt/`; no UI yet.
+Current shape: `src/main.rs` prints the version or runs `--connect-test`, `--probe` or the device dev CLI (`--get`, `--set`, `--watch`). There is a hardware-free protocol layer in `src/mdr/` and a Windows Bluetooth transport in `src/bt/`; no UI yet.
 
 Layers built so far:
 - `src/mdr/frame.rs`: MDR frame pack/unpack (escaping, checksum, 2048-byte limit) and a streaming `FrameParser` that drops bad frames and resyncs on `3E`.
@@ -15,6 +15,12 @@ Layers built so far:
 - `src/device/handshake.rs`: the V2 init handshake (`00 00`, `02 00`, `04 02`, `04 01`, `04 03`, `06 00`, T2 `06 00` only if table 2 is enabled) into `DeviceInfo`; read-only guard mode; fails cleanly if table 1 is unsupported.
 - `src/probe.rs`: `xm-control --probe <out> [--device <mac>] [--keep-mac]`: handshake, then read-only GETs of the MVP features that the support lists advertise, 5 s listening for unsolicited frames,
   and a plain-text dump (device, support lists, feature reads, hex frame log). The MAC and any MAC-shaped text in frames are hidden unless `--keep-mac`. The file is written even if the run fails part-way.
+- `src/device/{mod,state,feature}.rs`: the device worker (ADR 0004). `DeviceHandle::connect(mac, wake)` starts one thread that owns the `Session`: handshake, initial sync of the
+  supported features, then a loop over `Command`s in and incoming RET/NTFY frames. `Event`s (`Connected`, `Synced`, `StateChanged` + snapshot, `Unhandled`, `Error`, `Disconnected`) go out over
+  `mpsc`. `trait Feature` (support-list gate, initial GETs, frame parser, SET encoder) is registered in the static `FEATURES` slice (empty until tasks 0005-0011). No auto-reconnect.
+- Dev CLI: `--get [feature]` (device info and state after the initial sync), `--set <feature> <value>`, `--watch [secs]` (event log); all take `--device <mac>`. Sends nothing but the read-only sync until a feature exists.
+
+Layers, top to bottom: UI / dev CLI -> `device` worker (state, events) -> `mdr::session` (ACK, seq, retry) -> `mdr::guard` + `mdr::frame` -> `bt` transport.
 
 Intended shape (not built yet): a Windows window app that opens an RFCOMM connection to Sony WH-1000XM6 headphones,
 speaks Sony's MDR protocol (framing, ACKs, get/set/notify commands) and shows the headphone settings in one window.

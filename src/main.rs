@@ -4,9 +4,11 @@ mod mdr;
 mod probe;
 
 use bt::{MDR_V2_UUID, format_mac, parse_guid, parse_mac};
+use device::{Command, DeviceHandle, Event, FEATURES};
 use mdr::session::{Timeouts, Transport};
 use std::process::ExitCode;
-use std::time::Duration;
+use std::sync::mpsc::RecvTimeoutError;
+use std::time::{Duration, Instant};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long `--probe` listens for unsolicited frames after the reads.
@@ -15,7 +17,7 @@ const PROBE_LISTEN: Duration = Duration::from_secs(5);
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let has = |flag: &str| args.iter().any(|a| a == flag);
-    if !has("--connect-test") && !has("--probe") {
+    if !["--connect-test", "--probe", "--get", "--set", "--watch"].iter().any(|f| has(f)) {
         println!("{}", banner());
         return ExitCode::SUCCESS;
     }
@@ -24,6 +26,8 @@ fn main() -> ExitCode {
         if has("--probe") {
             let out = flag_value(&args, "--probe")?.ok_or("--probe needs an output file")?;
             probe(out, device, has("--keep-mac"))
+        } else if has("--get") || has("--set") || has("--watch") {
+            device_cli(&args, device)
         } else {
             connect_test(device)
         }
@@ -88,6 +92,53 @@ fn probe(out: &str, device: Option<&str>, keep_mac: bool) -> Result<(), String> 
     std::fs::write(out, report).map_err(|e| format!("cannot write {out}: {e}"))?;
     println!("wrote {out}");
     result
+}
+
+/// Dev CLI over the device worker (ADR 0004): `--get [feature]` prints the device and its state after the initial sync, `--set <feature> <value>`
+/// sends one SET and logs events for a few seconds, `--watch [secs]` logs events (default 60 s). `--get` and `--watch` send no command beyond the
+/// initial read-only sync. The feature name is checked before connecting, so an unknown one never reaches the headset.
+fn device_cli(args: &[String], device: Option<&str>) -> Result<(), String> {
+    let after = |flag: &str, n: usize| args.iter().position(|a| a == flag).and_then(|i| args.get(i + n)).filter(|v| !v.starts_with("--"));
+    let (command, linger) = if let Some(feature) = after("--set", 1) {
+        let value = after("--set", 2).ok_or("--set needs <feature> <value>")?;
+        (Some(Command::Set { feature: feature.clone(), value: value.clone() }), Duration::from_secs(3))
+    } else if let Some(i) = args.iter().position(|a| a == "--watch") {
+        (None, Duration::from_secs(args.get(i + 1).and_then(|v| v.parse().ok()).unwrap_or(60)))
+    } else {
+        (None, Duration::ZERO)
+    };
+    if args.iter().any(|a| a == "--set") && command.is_none() {
+        return Err("--set needs <feature> <value>".into());
+    }
+    if let Some(name) = after("--set", 1).or_else(|| after("--get", 1))
+        && !FEATURES.iter().any(|f| f.name() == name)
+    {
+        let known: Vec<_> = FEATURES.iter().map(|f| f.name()).collect();
+        return Err(format!("unknown feature {name:?} (known: {})", if known.is_empty() { "none yet".into() } else { known.join(", ") }));
+    }
+    let (handle, events) = DeviceHandle::connect(resolve_mac(device)?, None);
+    println!("connecting ...");
+    let (mut command, mut until) = (command, None::<Instant>);
+    loop {
+        let wait = until.map_or(CONNECT_TIMEOUT * 3, |u| u.saturating_duration_since(Instant::now()));
+        match events.recv_timeout(wait) {
+            Ok(Event::Connected(i)) => {
+                println!("connected: {} firmware {} ({} + {} support functions)", i.model_name, i.firmware, i.t1_functions.len(), i.t2_functions.len())
+            }
+            Ok(Event::Synced(state)) => {
+                println!("synced: {state:?}");
+                if let Some(c) = command.take() {
+                    handle.send(c).map_err(|_| "the device worker has ended")?;
+                }
+                until = Some(Instant::now() + linger);
+            }
+            Ok(Event::Disconnected(reason)) => return Err(format!("disconnected: {reason}")),
+            Ok(e) => println!("{e:?}"),
+            Err(RecvTimeoutError::Timeout) if until.is_some() => return Ok(()),
+            Err(RecvTimeoutError::Timeout) => return Err("no answer from the headset".into()),
+            Err(RecvTimeoutError::Disconnected) => return Err("device worker ended unexpectedly".into()),
+        }
+    }
 }
 
 fn banner() -> String {
