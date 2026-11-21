@@ -1,0 +1,249 @@
+XM Control probe dump
+=====================
+Tool:      xm-control 0.1.0
+Date:      2026-11-21 12:11:23 UTC
+Model:     WH-1000XM6
+Firmware:  3.1.5
+MAC:       XX:XX:XX:XX:XX:XX (hidden; run with --keep-mac to include it)
+Result:    completed
+
+This file lists only read-only requests. Before sending it, look through it for anything private:
+the device unique id, and names of other paired devices ("paired device list").
+
+== Device ==
+  model:             WH-1000XM6
+  firmware:          3.1.5
+  protocol version:  0x03003032
+  unique id:         XX:XX:XX:XX:XX:XX
+  series / color:    0x30 / 0x05
+  table 2 enabled:   true
+
+== Table 1 support functions (45 entries) ==
+  0x10  priority 255  unknown (raw id)
+  0x12  priority 255  CODEC_INDICATOR
+  0x13  priority 255  unknown (raw id)
+  0x14  priority 255  unknown (raw id)
+  0x15  priority 255  unknown (raw id)
+  0x16  priority 255  unknown (raw id)
+  0x17  priority 255  unknown (raw id)
+  0x23  priority 255  unknown (raw id)
+  0x25  priority 56  AUTO_POWER_OFF_WITH_WEARING_DETECTION
+  0x27  priority 255  unknown (raw id)
+  0x20  priority 255  BATTERY_LEVEL_INDICATOR
+  0x57  priority 19  unknown (raw id)
+  0x56  priority 255  unknown (raw id)
+  0x6D  priority 11  NC_ASM_NOISE_ADAPTATION
+  0x71  priority 2  unknown (raw id)
+  0x90  priority 255  unknown (raw id)
+  0xA1  priority 20  PLAYBACK
+  0xC1  priority 255  unknown (raw id)
+  0xC2  priority 255  unknown (raw id)
+  0xE2  priority 29  UPSCALING_AUTO_OFF (DSEE)
+  0xF1  priority 58  PLAYBACK_CONTROL_BY_WEARING
+  0xFC  priority 13  SMART_TALKING_MODE_TYPE2 (speak-to-chat)
+  0x69  priority 44  NC_AMB_BUTTON
+  0xF9  priority 67  unknown (raw id)
+  0xD1  priority 61  GENERAL_SETTING
+  0xD3  priority 43  GENERAL_SETTING
+  0x94  priority 255  unknown (raw id)
+  0x41  priority 49  unknown (raw id)
+  0x42  priority 60  unknown (raw id)
+  0x44  priority 255  unknown (raw id)
+  0xFF  priority 47  HEAD_GESTURE
+  0xD2  priority 34  GENERAL_SETTING
+  0x19  priority 255  unknown (raw id)
+  0xEB  priority 16  unknown (raw id)
+  0xE5  priority 17  unknown (raw id)
+  0xE6  priority 14  LISTENING_MODE
+  0xE7  priority 28  unknown (raw id)
+  0xFD  priority 45  unknown (raw id)
+  0xB6  priority 25  unknown (raw id)
+  0xB0  priority 68  unknown (raw id)
+  0xB2  priority 69  unknown (raw id)
+  0xB8  priority 33  unknown (raw id)
+  0xB7  priority 23  unknown (raw id)
+  0x34  priority 65  unknown (raw id)
+  0xF4  priority 37  VOICE_ASSISTANT
+
+== Table 2 support functions (16 entries) ==
+  0x42  priority 63  VOICE_GUIDANCE_VOLUME
+  0x52  priority 255  SAFE_LISTENING
+  0x54  priority 255  unknown (raw id)
+  0x60  priority 255  unknown (raw id)
+  0x61  priority 255  unknown (raw id)
+  0xF2  priority 255  unknown (raw id)
+  0xF5  priority 39  unknown (raw id)
+  0xF9  priority 51  unknown (raw id)
+  0x63  priority 255  unknown (raw id)
+  0x21  priority 255  unknown (raw id)
+  0x23  priority 255  unknown (raw id)
+  0x34  priority 255  unknown (raw id)
+  0xFD  priority 255  unknown (raw id)
+  0xF8  priority 50  unknown (raw id)
+  0x33  priority 5  PERIPHERAL_WITH_BT_CLASS_OF_DEVICE
+  0x31  priority 255  MULTIPOINT (source switch control)
+
+== Feature reads (command, then the headset's reply payload) ==
+  battery level (T1 22 00)
+      reply: 23 00 61 00
+  skipped, not advertised: battery level with threshold (T1 22 08)
+  noise cancelling, noise adaptation (T1 66 19)
+      reply: 67 19 01 01 00 00 14 00 00
+  skipped, not advertised: noise cancelling (T1 66 17)
+  skipped, not advertised: ambient sound only (T1 66 22)
+  equalizer band frequencies (T1 5A 00)
+      reply: 5B 00 0A 01 00 1F 01 00 3F 01 00 7D 01 00 FA 01 01 F4 01 03 E8 01 07 D0 01 0F A0 01 1F 40 01 3E 80
+  equalizer parameters (T1 56 00)
+      reply: 57 00 32 0A 0A 0A 05 05 06 06 06 08 08 09
+  equalizer status (T1 52 00)
+      no reply: timed out
+  DSEE parameter (T1 E6 01)
+      reply: E7 01 01
+  DSEE status (T1 E2 01)
+      reply: E3 01 00
+  speak-to-chat enable (T1 F6 0C)
+      reply: F7 0C 01 01
+  speak-to-chat sensitivity (T1 FA 0C)
+      reply: FB 0C 00 01
+  skipped, not advertised: auto power-off capability (T1 20 04)
+  skipped, not advertised: auto power-off parameter (T1 26 04)
+  auto power-off (wearing) capability (T1 20 05)
+      reply: 21 05 02 10 11
+  auto power-off (wearing) parameter (T1 26 05)
+      reply: 27 05 10 00
+  auto pause on removal (T1 F6 01)
+      reply: F7 01 00
+  codec indicator (T1 12 02)
+      reply: 13 02 02
+  general setting 1 (T1 D6 01)
+      no reply: timed out
+  general setting 2 (T1 D6 02)
+      no reply: timed out
+  general setting 3 (T1 D6 03)
+      no reply: timed out
+  skipped, not advertised: general setting 4 (T1 D6 04)
+  wearing status (T2 F2 00)
+      reply: F3 00 00
+  multipoint (T2 36 01)
+      reply: 37 01 01
+  paired device list (T2 36 02)
+      reply: 37 02 07 58 58 3A 58 58 3A 58 58 3A 58 58 3A 58 58 3A 58 58 01 2A 41 0C 06 50 43 2D 44 44 44 58 58 3A 58 58 3A 58 58 3A 58 58 3A 58 58 3A 58 58 00 FF FF FF 19 4C 61 70 74 6F 70 2D 41 41 41 41 41 41 41 41 41 41 41 41 41 41 41 41 41 41 58 58 3A 58 58 3A 58 58 3A 58 58 3A 58 58 3A 58 58 00 FF FF FF 06 50 43 2D 45 45 45 58 58 3A 58 58 3A 58 58 3A 58 58 3A 58 58 3A 58 58 00 FF FF FF 10 50 68 6F 6E 65 2D 42 42 42 42 42 42 42 42 42 42 58 58 3A 58 58 3A 58 58 3A 58 58 3A 58 58 3A 58 58 00 FF FF FF 0C 50 68 6F 6E 65 2D 43 43 43 43 43 43 58 58 3A 58 58 3A 58 58 3A 58 58 3A 58 58 3A 58 58 00 FF FF FF 06 50 43 2D 44 44 44 58 58 3A 58 58 3A 58 58 3A 58 58 3A 58 58 3A 58 58 00 FF FF FF 06 50 43 2D 44 44 44 01
+  pairing mode status (T2 32 02)
+      reply: 33 02 00 00
+  safe listening HBS_1 (T2 5A 00)
+      no reply: timed out
+  safe listening HBS_2 (T2 5A 02)
+      reply: 5B 02 00 03
+
+== Unsolicited frames received after the reads ==
+  table 0x0E: 5B 02 00 03
+
+== Frame log (ms since start; TX = sent to the headset, RX = received) ==
+      0 ms  TX  3E 0C 00 00 00 00 02 00 00 0E 3C
+     36 ms  RX  3E 01 01 00 00 00 00 02 3C
+     58 ms  RX  3E 0C 01 00 00 00 08 01 00 03 00 30 32 00 00 7B 3C
+     58 ms  TX  3E 01 00 00 00 00 00 01 3C
+     58 ms  TX  3E 0C 01 00 00 00 02 02 00 11 3C
+     78 ms  RX  3E 01 00 00 00 00 00 01 3C
+     98 ms  RX  3E 0C 00 00 00 00 15 03 00 04 11 58 58 3A 58 58 3A 58 58 3A 58 58 3A 58 58 3A 58 58 7B 3C
+     98 ms  TX  3E 01 01 00 00 00 00 02 3C
+     98 ms  TX  3E 0C 00 00 00 00 02 04 02 14 3C
+    128 ms  RX  3E 01 01 00 00 00 00 02 3C
+    148 ms  RX  3E 0C 01 00 00 00 08 05 02 05 33 2E 31 2E 35 16 3C
+    148 ms  TX  3E 01 00 00 00 00 00 01 3C
+    148 ms  TX  3E 0C 01 00 00 00 02 04 01 14 3C
+    188 ms  RX  3E 01 00 00 00 00 00 01 3C
+    208 ms  RX  3E 0C 00 00 00 00 0D 05 01 0A 57 48 2D 31 30 30 30 58 4D 36 91 3C
+    208 ms  TX  3E 01 01 00 00 00 00 02 3C
+    208 ms  TX  3E 0C 00 00 00 00 02 04 03 15 3C
+    248 ms  RX  3E 01 01 00 00 00 00 02 3C
+    278 ms  RX  3E 0C 01 00 00 00 04 05 03 30 05 4E 3C
+    278 ms  TX  3E 01 00 00 00 00 00 01 3C
+    278 ms  TX  3E 0C 01 00 00 00 02 06 00 15 3C
+    297 ms  RX  3E 01 00 00 00 00 00 01 3C
+    319 ms  RX  3E 0C 00 00 00 00 5D 07 00 2D 10 FF 12 FF 13 FF 14 FF 15 FF 16 FF 17 FF 23 FF 25 38 27 FF 20 FF 57 13 56 FF 6D 0B 71 02 90 FF A1 14 C1 FF C2 FF E2 1D F1 3A FC 0D 69 2C F9 43 D1 3D 2D D3 2B 94 FF 41 31 42 3D 2C 44 FF FF 2F D2 22 19 FF EB 10 E5 11 E6 0E E7 1C FD 2D B6 19 B0 44 B2 45 B8 21 B7 17 34 41 F4 25 65 3C
+    319 ms  TX  3E 01 01 00 00 00 00 02 3C
+    319 ms  TX  3E 0E 00 00 00 00 02 06 00 16 3C
+    339 ms  RX  3E 01 01 00 00 00 00 02 3C
+    358 ms  RX  3E 0E 01 00 00 00 23 07 00 10 42 3F 52 FF 54 FF 60 FF 61 FF F2 FF F5 27 F9 33 63 FF 21 FF 23 FF 34 FF FD FF F8 32 33 05 31 FF CB 3C
+    358 ms  TX  3E 01 00 00 00 00 00 01 3C
+    358 ms  TX  3E 0C 01 00 00 00 02 22 00 31 3C
+    398 ms  RX  3E 01 00 00 00 00 00 01 3C
+    418 ms  RX  3E 0C 00 00 00 00 04 23 00 61 00 94 3C
+    418 ms  TX  3E 01 01 00 00 00 00 02 3C
+    418 ms  TX  3E 0C 00 00 00 00 02 66 19 8D 3C
+    448 ms  RX  3E 01 01 00 00 00 00 02 3C
+    466 ms  RX  3E 0C 01 00 00 00 09 67 19 01 01 00 00 14 00 00 AC 3C
+    467 ms  TX  3E 01 00 00 00 00 00 01 3C
+    467 ms  TX  3E 0C 01 00 00 00 02 5A 00 69 3C
+    508 ms  RX  3E 01 00 00 00 00 00 01 3C
+    528 ms  RX  3E 0C 00 00 00 00 21 5B 00 0A 01 00 1F 01 00 3F 01 00 7D 01 00 FA 01 01 F4 01 03 E8 01 07 D0 01 0F A0 01 1F 40 01 3D 2E 80 F4 3C
+    528 ms  TX  3E 01 01 00 00 00 00 02 3C
+    528 ms  TX  3E 0C 00 00 00 00 02 56 00 64 3C
+    568 ms  RX  3E 01 01 00 00 00 00 02 3C
+    598 ms  RX  3E 0C 01 00 00 00 0E 57 00 32 0A 0A 0A 05 05 06 06 06 08 08 09 F7 3C
+    598 ms  TX  3E 01 00 00 00 00 00 01 3C
+    598 ms  TX  3E 0C 01 00 00 00 02 52 00 61 3C
+    615 ms  RX  3E 01 00 00 00 00 00 01 3C
+   5623 ms  TX  3E 0C 00 00 00 00 02 E6 01 F5 3C
+   5668 ms  RX  3E 01 01 00 00 00 00 02 3C
+   5687 ms  RX  3E 0C 00 00 00 00 03 E7 01 01 F8 3C
+   5687 ms  TX  3E 01 01 00 00 00 00 02 3C
+   5687 ms  TX  3E 0C 01 00 00 00 02 E2 01 F2 3C
+   5718 ms  RX  3E 01 00 00 00 00 00 01 3C
+   5737 ms  RX  3E 0C 01 00 00 00 03 E3 01 00 F4 3C
+   5737 ms  TX  3E 01 00 00 00 00 00 01 3C
+   5737 ms  TX  3E 0C 00 00 00 00 02 F6 0C 10 3C
+   5797 ms  RX  3E 01 01 00 00 00 00 02 3C
+   5818 ms  RX  3E 0C 00 00 00 00 04 F7 0C 01 01 15 3C
+   5818 ms  TX  3E 01 01 00 00 00 00 02 3C
+   5818 ms  TX  3E 0C 01 00 00 00 02 FA 0C 15 3C
+   5842 ms  RX  3E 01 00 00 00 00 00 01 3C
+   5857 ms  RX  3E 0C 01 00 00 00 04 FB 0C 00 01 19 3C
+   5857 ms  TX  3E 01 00 00 00 00 00 01 3C
+   5857 ms  TX  3E 0C 00 00 00 00 02 20 05 33 3C
+   5887 ms  RX  3E 01 01 00 00 00 00 02 3C
+   5908 ms  RX  3E 0C 00 00 00 00 05 21 05 02 10 11 5A 3C
+   5908 ms  TX  3E 01 01 00 00 00 00 02 3C
+   5908 ms  TX  3E 0C 01 00 00 00 02 26 05 3A 3C
+   5947 ms  RX  3E 01 00 00 00 00 00 01 3C
+   5967 ms  RX  3E 0C 01 00 00 00 04 27 05 10 00 4D 3C
+   5967 ms  TX  3E 01 00 00 00 00 00 01 3C
+   5967 ms  TX  3E 0C 00 00 00 00 02 F6 01 05 3C
+   6007 ms  RX  3E 01 01 00 00 00 00 02 3C
+   6034 ms  RX  3E 0C 00 00 00 00 03 F7 01 00 07 3C
+   6034 ms  TX  3E 01 01 00 00 00 00 02 3C
+   6034 ms  TX  3E 0C 01 00 00 00 02 12 02 23 3C
+   6058 ms  RX  3E 01 00 00 00 00 00 01 3C
+   6078 ms  RX  3E 0C 01 00 00 00 03 13 02 02 27 3C
+   6078 ms  TX  3E 01 00 00 00 00 00 01 3C
+   6078 ms  TX  3E 0C 00 00 00 00 02 D6 01 E5 3C
+   6118 ms  RX  3E 01 01 00 00 00 00 02 3C
+  11119 ms  TX  3E 0C 01 00 00 00 02 D6 02 E7 3C
+  11157 ms  RX  3E 01 00 00 00 00 00 01 3C
+  16165 ms  TX  3E 0C 00 00 00 00 02 D6 03 E7 3C
+  16207 ms  RX  3E 01 01 00 00 00 00 02 3C
+  21218 ms  TX  3E 0E 01 00 00 00 02 F2 00 03 3C
+  21247 ms  RX  3E 01 00 00 00 00 00 01 3C
+  21267 ms  RX  3E 0E 00 00 00 00 03 F3 00 00 04 3C
+  21267 ms  TX  3E 01 01 00 00 00 00 02 3C
+  21267 ms  TX  3E 0E 00 00 00 00 02 36 01 47 3C
+  21307 ms  RX  3E 01 01 00 00 00 00 02 3C
+  21327 ms  RX  3E 0E 01 00 00 00 03 37 01 01 4B 3C
+  21327 ms  TX  3E 01 00 00 00 00 00 01 3C
+  21327 ms  TX  3E 0E 01 00 00 00 02 36 02 49 3C
+  21339 ms  RX  3E 01 00 00 00 00 00 01 3C
+  21368 ms  RX  3E 0E 00 00 00 00 EB 37 02 07 58 58 3A 58 58 3A 58 58 3A 58 58 3A 58 58 3A 58 58 01 2A 41 0C 06 50 43 2D 44 44 44 58 58 3A 58 58 3A 58 58 3A 58 58 3A 58 58 3A 58 58 00 FF FF FF 19 4C 61 70 74 6F 70 2D 41 41 41 41 41 41 41 41 41 41 41 41 41 41 41 41 41 41 58 58 3A 58 58 3A 58 58 3A 58 58 3A 58 58 3A 58 58 00 FF FF FF 06 50 43 2D 45 45 45 58 58 3A 58 58 3A 58 58 3A 58 58 3A 58 58 3A 58 58 00 FF FF FF 10 50 68 6F 6E 65 2D 42 42 42 42 42 42 42 42 42 42 58 58 3A 58 58 3A 58 58 3A 58 58 3A 58 58 3A 58 58 00 FF FF FF 0C 50 68 6F 6E 65 2D 43 43 43 43 43 43 58 58 3A 58 58 3A 58 58 3A 58 58 3A 58 58 3A 58 58 00 FF FF FF 06 50 43 2D 44 44 44 58 58 3A 58 58 3A 58 58 3A 58 58 3A 58 58 3A 58 58 00 FF FF FF 06 50 43 2D 44 44 44 01 91 3C
+  21397 ms  TX  3E 01 01 00 00 00 00 02 3C
+  21397 ms  TX  3E 0E 00 00 00 00 02 32 02 44 3C
+  21437 ms  RX  3E 01 01 00 00 00 00 02 3C
+  21457 ms  RX  3E 0E 01 00 00 00 04 33 02 00 00 48 3C
+  21457 ms  TX  3E 01 00 00 00 00 00 01 3C
+  21457 ms  TX  3E 0E 01 00 00 00 02 5A 00 6B 3C
+  21498 ms  RX  3E 01 00 00 00 00 00 01 3C
+  21517 ms  RX  3E 0E 00 00 00 00 04 5B 02 00 03 72 3C
+  21517 ms  TX  3E 01 01 00 00 00 00 02 3C
+  26512 ms  TX  3E 0E 00 00 00 00 02 5A 02 6C 3C
+  26537 ms  RX  3E 01 01 00 00 00 00 02 3C
+  26557 ms  RX  3E 0E 01 00 00 00 04 5B 02 00 03 73 3C
+  26557 ms  TX  3E 01 00 00 00 00 00 01 3C

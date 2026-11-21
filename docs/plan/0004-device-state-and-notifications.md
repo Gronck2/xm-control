@@ -5,17 +5,19 @@
 are ACKed by the session first, then dispatched by `(table, command id)` through a registry of feature handlers. Handlers mutate `DeviceState` and push `Event::StateChanged`.
 `trait Feature { fn name; fn functions_required() -> &[FnId]; fn initial_gets(&DeviceInfo) -> Vec<Cmd>; fn on_frame(&mut State, &Frame) -> bool; fn encode(set) -> AllowedCommand }`.
 Registration is a static slice so adding a feature is one line, and the dev CLI and the UI both consume the same `Command` enum.
+Each initial GET has a response wait with a timeout; "ACKed, no reply" ends that GET quietly (XM6 does this for `52 00`).
 
 ## Steps
 1. State, Command, Event types; feature trait + registry; dummy feature for tests.
-2. Worker thread with mock-transport tests (ordering, NTFY, not-advertised, disconnect).
+2. Worker thread with mock-transport tests (ordering, NTFY, not-advertised, disconnect, ACKed-but-silent request, reply with a different type byte). A test helper loads RX frames and the support lists from `tests/fixtures/xm6-probe.txt`.
 3. Dev CLI: `--get <name>`, `--set <name> <args>`, `--watch` (print events); connect via `--device <mac>`.
 4. Update `docs/arch/overview.md` with the layer diagram.
 
 ## Files likely touched
-`src/device/{mod,state,feature}.rs`, `src/main.rs`, `src/mdr/session.rs`, `docs/arch/overview.md`.
+`src/device/{mod,state,feature}.rs`, `src/main.rs`, `src/mdr/session.rs`, `docs/arch/overview.md`, test helper for the fixture (`src/device/testdata.rs` under `#[cfg(test)]`).
 
 ## Tradeoffs
 - One worker + channels vs shared `Arc<Mutex<State>>`: channels give a clean event stream (needed for NTFY to UI) and are UI-framework neutral; a state snapshot is still copied into the event for simple UIs.
 - Feature trait adds a little indirection but keeps 0005-0011 independent and parallelizable (separate files, one registry line each).
 - Dev CLI is throwaway-grade but kept: it is how the owner tests protocol tasks without a UI.
+- Replaying the real frame log (instead of hand-built frames) catches layout mistakes early; the cost is a tiny text parser in test code.
