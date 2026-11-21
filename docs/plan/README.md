@@ -23,11 +23,14 @@ Feature tasks build their unit tests from this file's reply bytes and support li
                                                                         |
    ADR "UI stack" (owner decides)  ->  0012 UI shell  ->  0013 UI sound panels (battery, NC, EQ, DSEE)
                                                       ->  0014 UI system panels (STC, power/wearing, multipoint)
+                                                                        |
+                                                              0015 readable errors (Display for the error enums; stacked on 0014)
 ```
 
 - 0001-0004 and 0005-0011 never touch UI code; the layers are: `mdr` (frame, guard, session), `bt` (transport), `device` (state + features), `ui`.
 - 0012 can start after 0004 once the ADR exists; it may run in parallel with 0005-0011, but 0013/0014 need the matching feature tasks.
 - The "inferred/unknown" items from before the capture are settled in the feature tasks. Feature tasks must gate on the support list, never on the model name.
+- 0015 is a small text-only follow-up (no protocol change, no SETs); it is stacked on the 0014 branch because the UI code lives there.
 
 ## Which tasks send SET commands
 
@@ -41,6 +44,7 @@ Feature tasks build their unit tests from this file's reply bytes and support li
 | 0009 Speak-to-Chat | **yes** | `F8 0C ...`, `FC 0C ...` |
 | 0010 power / wearing | **yes** (wearing status is read-only) | `28 05 ...`, `F8 01 ...` |
 | 0011 multipoint | **yes** (device list and pairing status are read-only) | `38 01 ...` |
+| 0015 readable errors | no | none |
 
 ## Cross-cutting rules (apply to every task)
 
