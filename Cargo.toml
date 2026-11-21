@@ -1,0 +1,13 @@
+[package]
+name = "xm-control"
+version = "0.1.0"
+edition = "2024"
+description = "Control Sony WH-1000XM6 headphones from a Windows PC over Bluetooth"
+repository = "https://github.com/Gronck2/xm-control"
+license = "MIT"
+
+[dependencies]
+
+[profile.release]
+lto = true
+strip = true

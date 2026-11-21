@@ -1,0 +1,8 @@
+XM Control
+Copyright (c) 2026 Gronck2
+
+The Sony MDR protocol details used by this project were learned from
+SonyHeadphonesClient by mos9527 and contributors:
+https://github.com/mos9527/SonyHeadphonesClient
+licensed under the MIT License. This project is an independent Rust
+implementation; it does not include that project's source code.
