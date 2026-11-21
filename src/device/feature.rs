@@ -27,6 +27,11 @@ pub trait Feature: Sync {
     /// does not know, so the worker can report a frame nobody understood.
     fn on_frame(&self, state: &mut DeviceState, table: Table, payload: &[u8]) -> Parsed;
 
+    /// Whether the worker should re-run `initial_gets` now (asked once per refresh interval). Default: never.
+    fn wants_refresh(&self, _: &DeviceState) -> bool {
+        false
+    }
+
     /// Turns a user value (CLI text) into the SET payload. It still goes through the guard in `Mode::Normal` before it is sent.
     fn encode_set(&self, value: &str) -> Result<(Table, Vec<u8>), String>;
 }
