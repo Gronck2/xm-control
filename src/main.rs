@@ -1,3 +1,5 @@
+mod mdr;
+
 fn main() {
     println!("{}", banner());
 }
