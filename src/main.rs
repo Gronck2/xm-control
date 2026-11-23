@@ -2,6 +2,7 @@ mod bt;
 mod device;
 mod mdr;
 mod probe;
+mod ui;
 
 use bt::{MDR_V2_UUID, format_mac, parse_guid, parse_mac};
 use device::{Command, DeviceHandle, Event, FEATURES};
@@ -16,6 +17,16 @@ const PROBE_LISTEN: Duration = Duration::from_secs(5);
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.is_empty() {
+        release_own_console();
+        return match ui::view::run() {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("error: {e}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     let has = |flag: &str| args.iter().any(|a| a == flag);
     if !["--connect-test", "--probe", "--get", "--set", "--watch"].iter().any(|f| has(f)) {
         println!("{}", banner());
@@ -148,6 +159,19 @@ fn device_cli(args: &[String], device: Option<&str>) -> Result<(), String> {
             Err(RecvTimeoutError::Timeout) if until.is_some() => return Ok(()),
             Err(RecvTimeoutError::Timeout) => return Err("no answer from the headset".into()),
             Err(RecvTimeoutError::Disconnected) => return Err("device worker ended unexpectedly".into()),
+        }
+    }
+}
+
+/// The exe is a console-subsystem program so shells wait for it. Started from Explorer the console is ours alone: free it before the window opens.
+/// Started from a terminal (other processes share the console) it is left alone.
+fn release_own_console() {
+    use windows_sys::Win32::System::Console::{FreeConsole, GetConsoleProcessList};
+    let mut pid = 0u32;
+    // SAFETY: plain Win32 calls with a valid one-element buffer.
+    unsafe {
+        if GetConsoleProcessList(&mut pid, 1) == 1 {
+            FreeConsole();
         }
     }
 }
