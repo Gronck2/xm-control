@@ -39,7 +39,6 @@ pub struct NcAsm {
 }
 
 impl NcAsm {
-    #[allow(dead_code)] // used by the UI, which does not exist yet
     pub fn mode(&self) -> Mode {
         match (self.effect, self.asm) {
             (false, _) => Mode::Off,
@@ -80,7 +79,7 @@ fn on_off(v: &str) -> Result<bool, String> {
     }
 }
 
-/// `<off|nc|ambient> [--level N] [--voice on|off] [--auto on|off] [--sens standard|high|low]`, applied to `v`.
+/// `<off|nc|ambient> [--level N] [--voice on|off] [--auto on|off] [--sens standard|high|low] [--asm on|off]`, applied to `v`.
 fn apply(mut v: NcAsm, text: &str) -> Result<NcAsm, String> {
     let mut t = text.split_whitespace();
     v.set_mode(match t.next() {
@@ -95,6 +94,7 @@ fn apply(mut v: NcAsm, text: &str) -> Result<NcAsm, String> {
             "--level" => v.level = val.parse().ok().filter(|l| (1..=20).contains(l)).ok_or("level must be 1..20")?,
             "--voice" => v.voice = on_off(val)?,
             "--auto" => v.auto = on_off(val)?,
+            "--asm" => v.asm = on_off(val)?,
             "--sens" => v.sens = ["standard", "high", "low"].iter().position(|s| *s == val).ok_or("sens must be standard, high or low")? as u8,
             _ => return Err(format!("unknown option {flag:?}")),
         }
@@ -134,7 +134,9 @@ impl Feature for NcAsmFeature {
 
     fn encode_set(&self, state: &DeviceState, value: &str) -> Result<(Table, Vec<u8>), String> {
         let base = state.nc.ok_or("noise cancelling state is not known yet")?;
-        let set = apply(base, value)?.encode(true);
+        // a trailing ` --changing` marks a slider still being dragged (UNDER_CHANGING); the UI paces those with `Drag`
+        let (value, changed) = value.trim_end().strip_suffix(" --changing").map_or((value, true), |v| (v, false));
+        let set = apply(base, value)?.encode(changed);
         // the stored value may be out of range (loose parse): never send it, the user must set that field
         if !crate::mdr::guard::nc_set_args(&set[2..]) {
             return Err("the headset reported a value outside the supported range; set --level and --sens explicitly".into());
@@ -147,14 +149,12 @@ impl Feature for NcAsmFeature {
 const DRAG_GAP: Duration = Duration::from_millis(100);
 
 /// Rate limit for a slider drag: the UI calls `update` on every move with the latest value and `release` when the user lets go.
-#[allow(dead_code)] // used by the UI, which does not exist yet
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct Drag {
     last: Option<Instant>,
     pending: Option<NcAsm>,
 }
 
-#[allow(dead_code)] // used by the UI, which does not exist yet
 impl Drag {
     /// The UNDER_CHANGING SET to send now, or `None` if the previous one is too recent: the value is kept and `poll` (or `release`) sends it.
     pub fn update(&mut self, now: Instant, v: &NcAsm) -> Option<Vec<u8>> {
@@ -265,6 +265,8 @@ mod tests {
             assert!(enc(bad).is_err(), "{bad:?}");
         }
         assert!(NcAsmFeature.encode_set(&DeviceState::default(), "nc").is_err());
+        // a slider drag goes out as UNDER_CHANGING
+        assert_eq!(enc("ambient --level 5 --changing").unwrap().1, [0x68, 0x19, 0, 1, 1, 0, 5, 0, 0]);
     }
 
     #[test]

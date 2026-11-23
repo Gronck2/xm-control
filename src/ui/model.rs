@@ -1,11 +1,19 @@
 //! UI-independent view model: `Event`s from the device worker update the `Model`, `Model::view` gives the text and enabled flags the view draws.
-//! The UI in this task sends no commands; Connect/Disconnect are handled by the view through `DeviceHandle`.
+//! User intents (`nc_*`, `eq_*`, `toggle_dsee`) return the `Command` to send; the view calls them only from real user gestures, never from a value it was told to show.
 
 use crate::bt::format_mac;
-use crate::device::Event;
 use crate::device::battery::{Battery, Charge};
 use crate::device::handshake::DeviceInfo;
+use crate::device::ncasm::{Drag, Mode, NcAsm};
 use crate::device::state::DeviceState;
+use crate::device::{Command, Event};
+use crate::mdr::guard::EQ_PRESETS;
+use std::time::{Duration, Instant};
+
+/// How long a released slider value or a dropdown pick is shown while the headset says nothing (it may refuse or normalise the value).
+const SETTLE: Duration = Duration::from_secs(1);
+/// Final codes from keys, page steps and the wheel are sent at most this often; the last value is flushed by the ENDTRACK or a timer.
+const STEP_PACE: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Phase {
@@ -27,6 +35,62 @@ pub struct Model {
     synced: bool,
     notice: Option<String>,
     show_mac: bool,
+    /// Rate limiter for the ambient-level drag (the core's own `Drag`).
+    drag: Drag,
+    /// The whole NC state the UI expects after its last NC intent. Every intent starts from it, so the next command never relies on the
+    /// stored state of the worker (which may not have heard the headset yet). Dropped when the headset reports it, or at the deadline.
+    nc_pending: Option<NcAsm>,
+    /// The ambient slider is held (or a key step is waiting for its flush): headset updates do not move it and the deadline does not drop it.
+    level_held: bool,
+    /// The DSEE value the UI expects after its last toggle.
+    dsee_pending: Option<bool>,
+    eq_edit: Option<(Vec<i16>, bool)>,
+    /// The EQ preset pick shown until the headset answers, so arrow keys on a combo do not snap back each step.
+    preset_edit: Option<u8>,
+    /// When the pending values (released sliders, picks) are dropped if the headset has not answered.
+    deadline: Option<Instant>,
+    /// The last paced final SET of a slider step.
+    last_step: Option<Instant>,
+}
+
+/// The noise-control rows. `level` is the displayed slider value (1..=20).
+#[derive(Debug, PartialEq, Eq)]
+pub struct NcView {
+    pub mode: Mode,
+    pub level: u8,
+    /// Level slider and focus-on-voice apply to ambient mode only.
+    pub ambient_enabled: bool,
+    pub voice: bool,
+    pub auto: bool,
+    /// 0 standard, 1 high, 2 low.
+    pub sens: u8,
+}
+
+/// The equalizer rows: `presets` are the names the XM6 accepts, `bands` the displayed dB values, `labels` the band frequencies.
+#[derive(Debug, PartialEq, Eq)]
+pub struct EqView {
+    pub presets: Vec<String>,
+    pub selected: Option<usize>,
+    pub bands: Vec<i16>,
+    pub labels: Vec<String>,
+    /// false: the headset says the EQ is unavailable (grey the panel).
+    pub enabled: bool,
+    /// Only CUSTOM and the user slots take band edits.
+    pub sliders_enabled: bool,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct DseeView {
+    pub auto: bool,
+    pub enabled: bool,
+}
+
+/// `None` = the headset does not advertise the feature (or it is not read yet): hide the controls.
+#[derive(Debug, PartialEq, Eq)]
+pub struct SoundView {
+    pub nc: Option<NcView>,
+    pub eq: Option<EqView>,
+    pub dsee: Option<DseeView>,
 }
 
 /// What the view shows. `battery` is `None` when the headset does not advertise it (or it is not read yet): hide the row.
@@ -41,11 +105,28 @@ pub struct ViewState {
     pub mac: String,
     pub mac_button_label: &'static str,
     pub battery: Option<String>,
+    pub sound: SoundView,
 }
 
 impl Model {
     pub fn new() -> Self {
-        Model { phase: Phase::Idle, target: None, info: None, state: DeviceState::default(), synced: false, notice: None, show_mac: false }
+        Model {
+            phase: Phase::Idle,
+            target: None,
+            info: None,
+            state: DeviceState::default(),
+            synced: false,
+            notice: None,
+            show_mac: false,
+            drag: Drag::default(),
+            nc_pending: None,
+            level_held: false,
+            dsee_pending: None,
+            eq_edit: None,
+            preset_edit: None,
+            deadline: None,
+            last_step: None,
+        }
     }
 
     /// A worker exists (connecting, connected or going down): the picker stays locked and the event channel needs draining.
@@ -78,9 +159,33 @@ impl Model {
             Event::Synced(state) => {
                 self.synced = true;
                 self.state = state;
+                self.clear_edits();
             }
-            Event::StateChanged { state, .. } => self.state = state,
-            Event::Error(e) => self.notice = Some(format!("{e:?}")),
+            Event::StateChanged { feature, state } => {
+                self.state = state;
+                // a prediction goes when the headset reports exactly it (a late answer to an earlier step leaves it); a held slider stays
+                // unless the headset leaves ambient mode
+                if self.level_held && self.state.nc.is_none_or(|n| n.mode() != Mode::Ambient) {
+                    (self.nc_pending, self.level_held) = (None, false);
+                }
+                if !self.level_held && self.nc_pending == self.state.nc {
+                    self.nc_pending = None;
+                }
+                if self.dsee_pending == self.state.dsee {
+                    self.dsee_pending = None;
+                }
+                if feature == "eq" {
+                    self.preset_edit = None;
+                    let eq = self.state.eq.as_ref();
+                    if self.eq_edit.as_ref().is_some_and(|(b, held)| !held && eq.is_none_or(|e| e.bands == *b || !is_custom(e.preset))) {
+                        self.eq_edit = None;
+                    }
+                }
+            }
+            Event::Error(e) => {
+                self.notice = Some(format!("{e:?}"));
+                self.clear_edits();
+            }
             Event::Unhandled { .. } => {}
             Event::Disconnected(reason) => {
                 self.phase = if self.phase == Phase::Disconnecting { Phase::Idle } else { Phase::Disconnected(reason) };
@@ -88,8 +193,40 @@ impl Model {
                 self.state = DeviceState::default();
                 self.synced = false;
                 self.notice = None;
+                self.clear_edits();
             }
         }
+    }
+
+    fn clear_edits(&mut self) {
+        (self.nc_pending, self.level_held, self.dsee_pending, self.eq_edit, self.preset_edit, self.deadline) = (None, false, None, None, None, None);
+    }
+
+    fn settle(&mut self) {
+        self.deadline = Some(Instant::now() + SETTLE);
+    }
+
+    /// Drops the edits the headset never answered (a held slider stays). Returns true when something was dropped: redraw.
+    pub fn expire(&mut self, now: Instant) -> bool {
+        if self.deadline.is_none_or(|d| d > now) {
+            return false;
+        }
+        self.deadline = None;
+        if !self.level_held {
+            self.nc_pending = None;
+        }
+        self.eq_edit = self.eq_edit.take().filter(|e| e.1);
+        (self.preset_edit, self.dsee_pending) = (None, None);
+        true
+    }
+
+    /// true when a step SET may go out now (at most one per `STEP_PACE`).
+    pub fn pace(&mut self, now: Instant) -> bool {
+        let ok = self.last_step.is_none_or(|t| now.saturating_duration_since(t) >= STEP_PACE);
+        if ok {
+            self.last_step = Some(now);
+        }
+        ok
     }
 
     pub fn view(&self) -> ViewState {
@@ -115,7 +252,229 @@ impl Model {
             mac: self.target.as_ref().map_or("-".to_string(), |t| mac_text(t.1, self.show_mac)),
             mac_button_label: if self.show_mac { "Hide" } else { "Show" },
             battery: self.state.battery.map(battery_text),
+            sound: self.sound_view(),
         }
+    }
+}
+
+const SENS: [&str; 3] = ["standard", "high", "low"];
+
+fn mode_text(m: Mode) -> &'static str {
+    match m {
+        Mode::Off => "off",
+        Mode::Nc => "nc",
+        Mode::Ambient => "ambient",
+    }
+}
+
+/// `<mode> --level L --voice on|off --auto on|off --sens standard|high|low`, plus ` --asm on|off` for Off (which has no mode to name it)
+/// and ` --changing` for a drag step. `None` for an out-of-range sensitivity: that is never sent.
+fn nc_text(n: &NcAsm, changing: bool) -> Option<String> {
+    let on = |b| if b { "on" } else { "off" };
+    let sens = SENS.get(usize::from(n.sens))?;
+    let asm = if n.mode() == Mode::Off { format!(" --asm {}", on(n.asm)) } else { String::new() };
+    let tail = if changing { " --changing" } else { "" };
+    Some(format!("{} --level {} --voice {} --auto {} --sens {sens}{asm}{tail}", mode_text(n.mode()), n.level, on(n.voice), on(n.auto)))
+}
+
+/// CUSTOM and the user slots (the XM6 accepts 0xA0..=0xA5).
+fn is_custom(preset: u8) -> bool {
+    (0xA0..=0xA5).contains(&preset)
+}
+
+/// "31", "500", "1k", "16k".
+fn freq_label(hz: u16) -> String {
+    if hz >= 1000 && hz.is_multiple_of(1000) {
+        format!("{}k", hz / 1000)
+    } else if hz >= 1000 {
+        format!("{:.1}k", hz as f32 / 1000.0)
+    } else {
+        hz.to_string()
+    }
+}
+
+/// The sound panels and their intents. Every intent returns the command for one user gesture; a value that came from the headset never reaches them.
+impl Model {
+    fn sound_view(&self) -> SoundView {
+        let nc = self.nc_base().map(|n| NcView {
+            mode: n.mode(),
+            level: n.level.clamp(1, 20),
+            ambient_enabled: n.mode() == Mode::Ambient,
+            voice: n.voice,
+            auto: n.auto,
+            sens: n.sens.min(2),
+        });
+        let eq = self.eq_presets().and_then(|presets| {
+            let eq = self.state.eq.as_ref()?;
+            let bands = self.eq_edit.as_ref().map_or(&eq.bands, |e| &e.0);
+            Some(EqView {
+                selected: presets.iter().position(|p| p.0 == self.preset_edit.unwrap_or(eq.preset)),
+                presets: presets.into_iter().map(|p| p.1).collect(),
+                bands: bands.iter().map(|b| (*b).clamp(-6, 6)).collect(),
+                labels: self.state.eq_freqs.iter().flatten().map(|&f| freq_label(f)).collect(),
+                enabled: !self.state.eq_disabled,
+                sliders_enabled: !self.state.eq_disabled && is_custom(eq.preset),
+            })
+        });
+        let dsee = self.state.dsee.map(|auto| DseeView { auto: self.dsee_pending.unwrap_or(auto), enabled: !self.state.dsee_disabled });
+        SoundView { nc, eq, dsee }
+    }
+
+    /// The presets to offer: those the headset lists and the XM6 accepts. `None` while the EQ is unknown or not the 10 x 13 layout (read-only, hidden).
+    fn eq_presets(&self) -> Option<Vec<(u8, String)>> {
+        let cap = self.state.eq_cap.as_ref().filter(|c| c.bands == 10 && c.steps == 13)?;
+        Some(cap.presets.iter().filter(|p| EQ_PRESETS.contains(&p.0)).cloned().collect())
+    }
+
+    fn set(feature: &str, value: String) -> Option<Command> {
+        Some(Command::Set { feature: feature.into(), value })
+    }
+
+    /// The NC state every intent starts from: what the UI expects, else what the headset reported.
+    fn nc_base(&self) -> Option<NcAsm> {
+        self.nc_pending.or(self.state.nc)
+    }
+
+    /// Applies `change` to the expected NC state, remembers the result and sends it with every field named, so no stale stored state fills a gap.
+    fn nc_intent(&mut self, change: impl FnOnce(&mut NcAsm)) -> Option<Command> {
+        let mut n = self.nc_base()?;
+        change(&mut n);
+        let text = nc_text(&n, false)?;
+        self.nc_pending = Some(n);
+        self.settle();
+        Self::set("nc", text)
+    }
+
+    pub fn nc_mode(&mut self, m: Mode) -> Option<Command> {
+        if self.nc_base()?.mode() == m { None } else { self.nc_intent(|n| n.set_mode(m)) }
+    }
+
+    pub fn nc_toggle_voice(&mut self) -> Option<Command> {
+        self.nc_intent(|n| n.voice = !n.voice)
+    }
+
+    pub fn nc_toggle_auto(&mut self) -> Option<Command> {
+        self.nc_intent(|n| n.auto = !n.auto)
+    }
+
+    pub fn nc_sens(&mut self, index: usize) -> Option<Command> {
+        let sens = u8::try_from(index).ok().filter(|&s| s < 3)?;
+        if self.nc_base()?.sens == sens { None } else { self.nc_intent(|n| n.sens = sens) }
+    }
+
+    /// The ambient slider moved to `level` (still held): an UNDER_CHANGING SET at most every 100 ms.
+    pub fn nc_level_moved(&mut self, level: u8, now: Instant) -> Option<Command> {
+        let n = NcAsm { level, ..self.nc_base().filter(|n| n.mode() == Mode::Ambient && (1..=20).contains(&level))? };
+        (self.nc_pending, self.level_held) = (Some(n), true);
+        self.settle();
+        self.drag.update(now, &n)?;
+        Self::set("nc", nc_text(&n, true)?)
+    }
+
+    /// The timer while the slider is held: sends the value a too-recent move left behind.
+    pub fn nc_drag_poll(&mut self, now: Instant) -> Option<Command> {
+        if !self.level_held {
+            return None;
+        }
+        self.drag.poll(now)?;
+        Self::set("nc", nc_text(&self.nc_pending?, true)?)
+    }
+
+    /// The ambient slider was let go at `level`: the final CHANGED SET, always sent.
+    pub fn nc_level_released(&mut self, level: u8) -> Option<Command> {
+        let Some(base) = self.nc_base().filter(|n| n.mode() == Mode::Ambient && (1..=20).contains(&level)) else {
+            if self.level_held {
+                (self.nc_pending, self.level_held) = (None, false); // refused: show the headset's level again
+            }
+            return None;
+        };
+        // nothing held and already sent (the ENDTRACK after a key step) or already what is shown: nothing to do
+        if !self.level_held && base.level == level {
+            return None;
+        }
+        self.level_held = false;
+        self.drag.release(&NcAsm { level, ..base });
+        self.nc_intent(|n| n.level = level)
+    }
+
+    /// A final code that does not end a drag (key, page, wheel): like `nc_level_released`, but at most one SET per 100 ms; a skipped value stays held.
+    pub fn nc_level_stepped(&mut self, level: u8, now: Instant) -> Option<Command> {
+        if self.pace(now) {
+            return self.nc_level_released(level);
+        }
+        if let Some(n) = self.nc_base().filter(|n| n.mode() == Mode::Ambient && (1..=20).contains(&level)) {
+            (self.nc_pending, self.level_held) = (Some(NcAsm { level, ..n }), true);
+        }
+        None
+    }
+
+    /// The paced counterpart of `eq_band_released`.
+    pub fn eq_band_stepped(&mut self, index: usize, db: i16, now: Instant) -> Option<Command> {
+        if self.pace(now) {
+            return self.eq_band_released(index, db);
+        }
+        self.eq_band_moved(index, db);
+        None
+    }
+
+    pub fn eq_select_preset(&mut self, index: usize) -> Option<Command> {
+        let eq = self.state.eq.as_ref()?;
+        let id = self.eq_presets()?.get(index)?.0;
+        if self.state.eq_disabled || id == self.preset_edit.unwrap_or(eq.preset) {
+            return None;
+        }
+        self.preset_edit = Some(id);
+        self.settle();
+        Self::set("eq", format!("preset {id:#04X}"))
+    }
+
+    /// Band `index` is being dragged to `db`: only shown, nothing is sent until release.
+    pub fn eq_band_moved(&mut self, index: usize, db: i16) {
+        if let Some(bands) = self.eq_bands_with(index, db) {
+            self.eq_edit = Some((bands, true));
+        }
+    }
+
+    /// Band `index` was let go at `db`: one SET with all ten bands.
+    pub fn eq_band_released(&mut self, index: usize, db: i16) -> Option<Command> {
+        let Some(bands) = self.eq_bands_with(index, db) else {
+            self.eq_edit = None; // refused: show the headset's bands again
+            return None;
+        };
+        // compared with what was last sent (a released edit), else with the headset's bands
+        let sent = self.eq_edit.as_ref().filter(|e| !e.1).map(|e| e.0.clone());
+        if sent.or_else(|| self.state.eq.as_ref().map(|e| e.bands.clone())).as_ref() == Some(&bands) {
+            if self.eq_edit.as_ref().is_some_and(|e| e.1) {
+                self.eq_edit = None;
+            }
+            return None;
+        }
+        let text = bands.iter().map(i16::to_string).collect::<Vec<_>>().join(" ");
+        self.eq_edit = Some((bands, false));
+        self.settle();
+        Self::set("eq", format!("bands {text}"))
+    }
+
+    /// The bands as shown with band `index` replaced; `None` unless the sliders are enabled and the value is in range.
+    fn eq_bands_with(&self, index: usize, db: i16) -> Option<Vec<i16>> {
+        let eq = self.state.eq.as_ref()?;
+        self.eq_presets()?;
+        if self.state.eq_disabled || !is_custom(eq.preset) || !(-6..=6).contains(&db) || index >= eq.bands.len() {
+            return None;
+        }
+        let mut bands = self.eq_edit.as_ref().map_or(&eq.bands, |e| &e.0).clone();
+        bands[index] = db;
+        Some(bands)
+    }
+
+    pub fn toggle_dsee(&mut self) -> Option<Command> {
+        let auto = self.dsee_pending.or(self.state.dsee)?;
+        if self.state.dsee_disabled {
+            return None;
+        }
+        self.dsee_pending = Some(!auto);
+        self.settle();
+        Self::set("dsee", if auto { "off" } else { "auto" }.into())
     }
 }
 
@@ -155,6 +514,15 @@ mod tests {
         let mut m = Model::new();
         m.begin_connect("WH-1000XM6".into(), 0xAABBCCDDEE01);
         m
+    }
+
+    #[test]
+    fn pace_allows_one_step_per_interval() {
+        let mut m = Model::new();
+        let t = Instant::now();
+        assert!(m.pace(t));
+        assert!(!m.pace(t + STEP_PACE / 2));
+        assert!(m.pace(t + STEP_PACE));
     }
 
     #[test]
@@ -255,5 +623,344 @@ mod tests {
         let mut m = connecting();
         m.apply(Event::Disconnected("connect failed: timed out".into()));
         assert_eq!(m.view().status, "Disconnected: connect failed: timed out");
+    }
+
+    use crate::device::eq::{Cap, Eq};
+    use std::time::Duration;
+
+    fn cmd(c: Option<Command>) -> (String, String) {
+        match c.expect("a command") {
+            Command::Set { feature, value } => (feature, value),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    fn sound_state() -> DeviceState {
+        let presets = [(0x30, "HEAVY"), (0x32, "HARD"), (0xA0, "CUSTOM"), (0x01, "ROCK"), (0xA1, "USER1")];
+        DeviceState {
+            nc: Some(NcAsm { effect: true, asm: true, voice: false, level: 10, auto: false, sens: 0 }),
+            eq: Some(Eq { preset: 0xA0, bands: vec![0, 1, 2, 3, 4, 5, 6, -1, -2, -3] }),
+            eq_cap: Some(Cap { bands: 10, steps: 13, presets: presets.iter().map(|p| (p.0, p.1.to_string())).collect() }),
+            eq_freqs: Some(vec![31, 63, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]),
+            dsee: Some(false),
+            ..Default::default()
+        }
+    }
+
+    fn with(state: DeviceState) -> Model {
+        let mut m = connecting();
+        m.apply(Event::Synced(state));
+        m
+    }
+
+    #[test]
+    fn nothing_advertised_hides_every_sound_panel() {
+        let s = with(DeviceState::default()).view().sound;
+        assert_eq!((s.nc, s.eq, s.dsee), (None, None, None));
+        // an EQ without a usable capability (read-only) is hidden too
+        let mut st = sound_state();
+        st.eq_cap = None;
+        assert_eq!(with(st).view().sound.eq, None);
+    }
+
+    #[test]
+    fn panels_show_the_state_and_follow_events() {
+        let mut m = with(sound_state());
+        let s = m.view().sound;
+        let nc = s.nc.unwrap();
+        assert_eq!((nc.mode, nc.level, nc.ambient_enabled, nc.voice, nc.auto, nc.sens), (Mode::Ambient, 10, true, false, false, 0));
+        let eq = s.eq.unwrap();
+        // ROCK is listed by the headset but not accepted: not offered
+        assert_eq!(eq.presets, ["HEAVY", "HARD", "CUSTOM", "USER1"]);
+        assert_eq!((eq.selected, eq.enabled, eq.sliders_enabled), (Some(2), true, true));
+        assert_eq!((eq.bands[6], eq.labels[0].as_str(), eq.labels[5].as_str(), eq.labels[9].as_str()), (6, "31", "1k", "16k"));
+        assert_eq!(s.dsee, Some(DseeView { auto: false, enabled: true }));
+        // the headset changes everything (button press, other device): the view follows; `apply` has no way to return a command
+        let mut st = sound_state();
+        st.nc = Some(NcAsm { effect: false, asm: true, voice: true, level: 3, auto: true, sens: 2 });
+        st.eq.as_mut().unwrap().preset = 0x32;
+        st.dsee = Some(true);
+        m.apply(Event::StateChanged { feature: "nc", state: st });
+        let s = m.view().sound;
+        let nc = s.nc.unwrap();
+        assert_eq!((nc.mode, nc.level, nc.ambient_enabled, nc.voice, nc.auto, nc.sens), (Mode::Off, 3, false, true, true, 2));
+        let eq = s.eq.unwrap();
+        assert_eq!((eq.selected, eq.sliders_enabled), (Some(1), false)); // factory preset: sliders off
+        assert!(s.dsee.unwrap().auto);
+    }
+
+    #[test]
+    fn eq_unavailable_greys_the_panel_and_blocks_intents() {
+        let mut st = sound_state();
+        st.eq_disabled = true;
+        st.dsee_disabled = true;
+        let mut m = with(st);
+        let s = m.view().sound;
+        let eq = s.eq.unwrap();
+        assert_eq!((eq.enabled, eq.sliders_enabled), (false, false));
+        assert!(!s.dsee.unwrap().enabled);
+        assert!(m.eq_select_preset(0).is_none() && m.eq_band_released(0, 3).is_none() && m.toggle_dsee().is_none());
+    }
+
+    #[test]
+    fn nc_intents_become_set_commands() {
+        let mut m = with(sound_state());
+        assert_eq!(cmd(m.nc_mode(Mode::Nc)), ("nc".into(), "nc --level 10 --voice off --auto off --sens standard".into()));
+        assert!(with(sound_state()).nc_mode(Mode::Ambient).is_none()); // already ambient: no SET
+        assert_eq!(cmd(with(sound_state()).nc_toggle_voice()).1, "ambient --level 10 --voice on --auto off --sens standard");
+        assert_eq!(cmd(with(sound_state()).nc_toggle_auto()).1, "ambient --level 10 --voice off --auto on --sens standard");
+        assert_eq!(cmd(with(sound_state()).nc_sens(2)).1, "ambient --level 10 --voice off --auto off --sens low");
+        let mut m = with(sound_state());
+        assert!(m.nc_sens(0).is_none() && m.nc_sens(3).is_none());
+        // without NC state nothing is sent
+        let mut none = with(DeviceState::default());
+        assert!(none.nc_mode(Mode::Nc).is_none() && none.nc_toggle_voice().is_none() && none.nc_level_released(5).is_none());
+    }
+
+    #[test]
+    fn the_level_slider_is_rate_limited_and_ends_with_changed() {
+        let mut m = with(sound_state());
+        let t0 = Instant::now();
+        assert_eq!(cmd(m.nc_level_moved(11, t0)).1, "ambient --level 11 --voice off --auto off --sens standard --changing");
+        assert!(m.nc_level_moved(12, t0 + Duration::from_millis(30)).is_none());
+        assert_eq!(m.view().sound.nc.unwrap().level, 12); // shown even when the SET was held back
+        // a headset update while the slider is held does not move it
+        m.apply(Event::StateChanged { feature: "nc", state: sound_state() });
+        assert_eq!(m.view().sound.nc.unwrap().level, 12);
+        assert_eq!(cmd(m.nc_level_released(13)).1, "ambient --level 13 --voice off --auto off --sens standard");
+        assert_eq!(m.view().sound.nc.unwrap().level, 13); // stays until the headset answers
+        assert!(m.nc_level_released(13).is_none()); // the ENDTRACK after a step: no duplicate SET
+        m.apply(Event::StateChanged { feature: "nc", state: sound_state() }); // late answer to an earlier step
+        assert_eq!(m.view().sound.nc.unwrap().level, 13);
+        let mut st = sound_state();
+        st.nc.as_mut().unwrap().level = 13;
+        m.apply(Event::StateChanged { feature: "nc", state: st });
+        assert_eq!(m.view().sound.nc.unwrap().level, 13);
+        m.apply(Event::StateChanged { feature: "nc", state: sound_state() });
+        assert_eq!(m.view().sound.nc.unwrap().level, 10);
+        // bounds, and not outside ambient mode
+        assert!(m.nc_level_moved(0, t0).is_none() && m.nc_level_released(21).is_none());
+        let mut st = sound_state();
+        st.nc.as_mut().unwrap().asm = false;
+        assert!(with(st).nc_level_released(5).is_none());
+    }
+
+    #[test]
+    fn a_skipped_drag_value_is_sent_by_the_poll_while_held() {
+        let mut m = with(sound_state());
+        let t0 = Instant::now();
+        assert!(m.nc_level_moved(11, t0).is_some());
+        assert!(m.nc_level_moved(12, t0 + Duration::from_millis(30)).is_none());
+        assert!(m.nc_drag_poll(t0 + Duration::from_millis(50)).is_none());
+        assert_eq!(cmd(m.nc_drag_poll(t0 + Duration::from_millis(100))).1, "ambient --level 12 --voice off --auto off --sens standard --changing");
+        assert!(m.nc_drag_poll(t0 + Duration::from_millis(250)).is_none());
+        // not held: nothing
+        assert!(with(sound_state()).nc_drag_poll(t0).is_none());
+    }
+
+    #[test]
+    fn off_names_the_predicted_asm_and_a_bad_sens_is_never_sent() {
+        use crate::device::FEATURES;
+        let mut m = with(sound_state()); // ambient: asm on
+        let (_, text) = cmd(m.nc_mode(Mode::Off));
+        assert!(text.contains("--asm on"), "{text}");
+        let mut stored = sound_state();
+        stored.nc.as_mut().unwrap().asm = false;
+        let f = FEATURES.iter().find(|f| f.name() == "nc").unwrap();
+        assert_eq!(f.encode_set(&stored, &text).unwrap().1[4], 1);
+        let mut st = sound_state();
+        st.nc.as_mut().unwrap().sens = 5;
+        let mut m = with(st);
+        assert!(m.nc_toggle_voice().is_none() && m.nc_mode(Mode::Nc).is_none() && m.nc_pending.is_none());
+    }
+
+    #[test]
+    fn unanswered_edits_expire_and_equal_releases_clear_at_once() {
+        // the headset already reports 13 (it answered an UNDER_CHANGING): the final SET still goes out
+        let mut st = sound_state();
+        st.nc.as_mut().unwrap().level = 13;
+        let mut m = with(st);
+        m.nc_level_moved(13, Instant::now());
+        assert_eq!(cmd(m.nc_level_released(13)).1, "ambient --level 13 --voice off --auto off --sens standard");
+        // a silently refused pick, level and band edit are dropped after the deadline
+        let mut m = with(sound_state());
+        assert!(m.eq_select_preset(1).is_some() && m.nc_sens(1).is_some() && m.nc_level_released(12).is_some() && m.eq_band_released(0, 5).is_some());
+        assert!(!m.expire(Instant::now()));
+        assert_eq!(m.view().sound.eq.unwrap().selected, Some(1));
+        assert!(m.expire(Instant::now() + Duration::from_secs(2)));
+        let s = m.view().sound;
+        assert_eq!((s.nc.as_ref().unwrap().sens, s.nc.unwrap().level), (0, 10));
+        let eq = s.eq.unwrap();
+        assert_eq!((eq.selected, eq.bands[0]), (Some(2), 0));
+        // a held slider is not dropped
+        m.nc_level_moved(15, Instant::now());
+        m.nc_level_released(16);
+        m.nc_level_moved(17, Instant::now());
+        m.expire(Instant::now() + Duration::from_secs(2));
+        assert_eq!(m.view().sound.nc.unwrap().level, 17);
+    }
+
+    #[test]
+    fn key_steps_are_paced_and_the_last_value_is_flushed() {
+        let mut m = with(sound_state());
+        let t0 = Instant::now();
+        assert_eq!(cmd(m.nc_level_stepped(11, t0)).1, "ambient --level 11 --voice off --auto off --sens standard");
+        assert!(m.nc_level_stepped(12, t0 + Duration::from_millis(30)).is_none());
+        assert!(m.nc_level_stepped(13, t0 + Duration::from_millis(60)).is_none());
+        assert_eq!(m.view().sound.nc.unwrap().level, 13);
+        assert_eq!(cmd(m.nc_level_stepped(14, t0 + Duration::from_millis(120))).1, "ambient --level 14 --voice off --auto off --sens standard");
+        assert!(m.nc_level_stepped(15, t0 + Duration::from_millis(150)).is_none());
+        assert_eq!(cmd(m.nc_level_released(15)).1, "ambient --level 15 --voice off --auto off --sens standard"); // the ENDTRACK or the timer
+        assert!(m.nc_level_released(15).is_none());
+        // the same for the equalizer
+        assert!(m.eq_band_stepped(0, 1, t0 + Duration::from_millis(300)).is_some());
+        assert!(m.eq_band_stepped(0, 2, t0 + Duration::from_millis(330)).is_none());
+        assert_eq!(cmd(m.eq_band_released(0, 2)).1, "bands 2 1 2 3 4 5 6 -1 -2 -3");
+    }
+
+    #[test]
+    fn eq_presets_and_bands() {
+        let mut m = with(sound_state());
+        assert_eq!(cmd(m.eq_select_preset(1)), ("eq".into(), "preset 0x32".into()));
+        m.apply(Event::StateChanged { feature: "eq", state: sound_state() });
+        assert!(m.eq_select_preset(2).is_none()); // already CUSTOM
+        assert!(m.eq_select_preset(9).is_none());
+        // dragging sends nothing and shows the value; release sends all ten bands once
+        m.eq_band_moved(0, 5);
+        assert_eq!(m.view().sound.eq.unwrap().bands[0], 5);
+        assert_eq!(cmd(m.eq_band_released(0, 5)), ("eq".into(), "bands 5 1 2 3 4 5 6 -1 -2 -3".into()));
+        assert_eq!(m.view().sound.eq.unwrap().bands[0], 5);
+        assert!(m.eq_band_released(0, 5).is_none()); // duplicate ENDTRACK
+        let mut st = sound_state();
+        st.eq.as_mut().unwrap().bands[0] = 5;
+        m.apply(Event::StateChanged { feature: "eq", state: st });
+        m.apply(Event::StateChanged { feature: "eq", state: sound_state() });
+        assert_eq!(m.view().sound.eq.unwrap().bands[0], 0);
+        // no change, out of range, bad index
+        assert!(m.eq_band_released(1, 1).is_none() && m.eq_band_released(0, 7).is_none() && m.eq_band_released(10, 0).is_none());
+        // factory presets: sliders are off, no SET
+        let mut st = sound_state();
+        st.eq.as_mut().unwrap().preset = 0x30;
+        let mut f = with(st);
+        f.eq_band_moved(0, 3);
+        assert!(f.eq_band_released(0, 3).is_none());
+        assert_eq!(f.view().sound.eq.unwrap().bands[0], 0);
+    }
+
+    #[test]
+    fn a_refused_release_drops_the_held_edit() {
+        let mut m = with(sound_state());
+        m.eq_band_moved(0, 4);
+        let mut st = sound_state();
+        st.eq.as_mut().unwrap().preset = 0x30; // HEAVY: sliders off
+        m.apply(Event::StateChanged { feature: "eq", state: st });
+        assert!(m.eq_band_released(0, 4).is_none());
+        assert_eq!(m.view().sound.eq.unwrap().bands[0], 0);
+        // the same for the ambient level
+        let mut m = with(sound_state());
+        m.nc_level_moved(15, Instant::now());
+        let mut st = sound_state();
+        st.nc.as_mut().unwrap().asm = false;
+        m.apply(Event::StateChanged { feature: "nc", state: st });
+        assert!(m.nc_level_released(15).is_none());
+        assert_eq!(m.view().sound.nc.unwrap().level, 10);
+    }
+
+    #[test]
+    fn dropdown_picks_stay_until_the_headset_answers() {
+        let mut m = with(sound_state());
+        assert_eq!(cmd(m.eq_select_preset(0)).1, "preset 0x30");
+        assert_eq!(m.view().sound.eq.unwrap().selected, Some(0));
+        assert_eq!(cmd(m.eq_select_preset(1)).1, "preset 0x32"); // arrow key: next step
+        assert!(m.eq_select_preset(1).is_none());
+        assert_eq!(cmd(m.nc_sens(1)).1, "ambient --level 10 --voice off --auto off --sens high");
+        assert_eq!(m.view().sound.nc.unwrap().sens, 1);
+        assert!(m.nc_sens(1).is_none());
+        m.apply(Event::StateChanged { feature: "nc", state: sound_state() }); // a different answer: the pick stays until the deadline
+        assert_eq!(m.view().sound.nc.unwrap().sens, 1);
+        m.expire(Instant::now() + Duration::from_secs(2));
+        assert_eq!(m.view().sound.nc.unwrap().sens, 0);
+        m.apply(Event::StateChanged { feature: "eq", state: sound_state() });
+        assert_eq!(m.view().sound.eq.unwrap().selected, Some(2));
+        assert!(m.eq_select_preset(0).is_some());
+        m.apply(Event::Error(crate::device::CommandError::NotSupported("x".into())));
+        assert_eq!(m.view().sound.eq.unwrap().selected, Some(2));
+    }
+
+    #[test]
+    fn dsee_toggle_and_errors_reset_edits() {
+        let mut m = with(sound_state());
+        assert_eq!(cmd(m.toggle_dsee()), ("dsee".into(), "auto".into()));
+        m.apply(Event::StateChanged { feature: "dsee", state: DeviceState { dsee: Some(true), ..sound_state() } });
+        assert_eq!(cmd(m.toggle_dsee()).1, "off");
+        m.eq_band_moved(0, 4);
+        m.apply(Event::Error(crate::device::CommandError::NotSupported("x".into())));
+        assert_eq!(m.view().sound.eq.unwrap().bands[0], 0);
+    }
+
+    #[test]
+    fn the_expected_nc_state_feeds_the_next_intent() {
+        // ambient click, then a sensitivity pick before the headset answered: still ambient
+        let mut st = sound_state();
+        st.nc = Some(NcAsm { effect: false, asm: true, voice: false, level: 10, auto: false, sens: 0 });
+        let mut m = with(st);
+        assert_eq!(cmd(m.nc_mode(Mode::Ambient)).1, "ambient --level 10 --voice off --auto off --sens standard");
+        assert_eq!(cmd(m.nc_sens(1)).1, "ambient --level 10 --voice off --auto off --sens high");
+        let nc = m.view().sound.nc.unwrap();
+        assert_eq!((nc.mode, nc.sens), (Mode::Ambient, 1));
+        // ambient then NC: the second click is not suppressed
+        let mut st = sound_state();
+        st.nc = Some(NcAsm { effect: true, asm: false, voice: false, level: 10, auto: false, sens: 0 });
+        let mut m = with(st);
+        assert!(m.nc_mode(Mode::Ambient).is_some());
+        assert_eq!(cmd(m.nc_mode(Mode::Nc)).1, "nc --level 10 --voice off --auto off --sens standard");
+        // the prediction goes when the headset reports it, and at the deadline when it never does
+        let mut m = with(sound_state());
+        let want = NcAsm { voice: true, ..sound_state().nc.unwrap() };
+        m.nc_toggle_voice();
+        assert_eq!(m.nc_pending, Some(want));
+        m.apply(Event::StateChanged { feature: "nc", state: DeviceState { nc: Some(want), ..sound_state() } });
+        assert_eq!(m.nc_pending, None);
+        m.nc_toggle_voice();
+        assert!(!m.expire(Instant::now()) && m.nc_pending.is_some());
+        assert!(m.expire(Instant::now() + Duration::from_secs(2)));
+        assert_eq!((m.nc_pending, m.view().sound.nc.unwrap().voice), (None, true));
+        // DSEE: a double click toggles twice from the prediction
+        let mut m = with(sound_state());
+        assert_eq!(cmd(m.toggle_dsee()).1, "auto");
+        assert_eq!(cmd(m.toggle_dsee()).1, "off");
+    }
+
+    /// Every command the model emits must encode and pass the guard in normal mode.
+    #[test]
+    fn every_emitted_command_encodes_and_passes_the_guard() {
+        use crate::device::FEATURES;
+        use crate::mdr::guard::{Mode as GMode, check};
+        let one = |f: &dyn Fn(&mut Model) -> Option<Command>| f(&mut with(sound_state()));
+        let t0 = Instant::now();
+        let mut cmds =
+            vec![one(&|m| m.nc_mode(Mode::Nc)), one(&|m| m.nc_toggle_voice()), one(&|m| m.nc_toggle_auto()), one(&|m| m.nc_sens(1)), one(&|m| m.nc_sens(2))];
+        cmds.extend([one(&|m| m.nc_level_moved(11, t0)), one(&|m| m.nc_level_released(1)), one(&|m| m.nc_level_released(20))]);
+        cmds.extend([one(&|m| m.eq_select_preset(0)), one(&|m| m.eq_select_preset(1)), one(&|m| m.eq_band_released(0, -6))]);
+        cmds.extend([one(&|m| m.eq_band_released(9, 6)), one(&|m| m.toggle_dsee())]);
+        let mut off = sound_state();
+        off.nc = Some(NcAsm { effect: false, asm: false, voice: false, level: 10, auto: false, sens: 0 });
+        cmds.push(with(off).nc_mode(Mode::Ambient));
+        cmds.push(one(&|m| m.nc_mode(Mode::Off)));
+        assert!(cmds.iter().all(Option::is_some));
+        for c in cmds.into_iter().flatten() {
+            let Command::Set { feature, value } = c else { panic!("{c:?}") };
+            if feature == "nc" {
+                assert!(["--level ", "--voice ", "--auto ", "--sens "].iter().all(|f| value.contains(f)), "{value}");
+            }
+            let f = FEATURES.iter().find(|f| f.name() == feature).expect("known feature");
+            let (table, payload) = f.encode_set(&sound_state(), &value).unwrap_or_else(|e| panic!("{feature} {value}: {e}"));
+            check(table, &payload, GMode::Normal).unwrap_or_else(|e| panic!("{feature} {value}: {e:?}"));
+        }
+    }
+
+    #[test]
+    fn frequency_labels() {
+        assert_eq!([31, 500, 1000, 1500, 16000].map(freq_label), ["31", "500", "1k", "1.5k", "16k"]);
     }
 }
