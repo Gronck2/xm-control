@@ -2,7 +2,7 @@
 //! It draws `ViewState` from `model` and forwards clicks; the device worker lives in its own thread and wakes the window with a private message,
 //! so the UI thread never waits on Bluetooth (the one exception: the paired-device list is read synchronously, it is a local registry-backed query).
 
-use super::model::{Model, SoundView};
+use super::model::{Model, SoundView, SystemView};
 use crate::bt::enumerate::{Device, paired_devices};
 use crate::device::Command;
 use crate::device::ncasm::Mode;
@@ -24,6 +24,10 @@ use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 /// Posted by the worker thread's wake callback: "events are waiting".
 const WM_DEVICE_EVENT: u32 = WM_APP + 1;
+/// Posted by a multipoint click: show the confirmation (wparam: 1 = turn on). Handled with no `&mut App` live, because the dialog runs its own message loop.
+const WM_CONFIRM: u32 = WM_APP + 2;
+/// Posted with the dialog's answer (wparam: 1 = yes); applied in a fresh handler.
+const WM_CONFIRM_ANSWER: u32 = WM_APP + 3;
 /// A repeating timer: flushes a paced slider step and drops edits the headset never answered.
 const TICK_ID: usize = 1;
 const TICK_MS: u32 = 150;
@@ -39,11 +43,17 @@ const ID_AUTO: usize = 114;
 const ID_SENS: usize = 115;
 const ID_EQ_PRESET: usize = 116;
 const ID_DSEE: usize = 117;
+const ID_STC: usize = 118;
+const ID_STC_SENS: usize = 119;
+const ID_STC_TIMEOUT: usize = 120;
+const ID_POWER: usize = 121;
+const ID_AUTOPAUSE: usize = 122;
+const ID_MULTIPOINT: usize = 123;
 /// `TBM_GETPOS` is `WM_USER`.
 const TBM_GETPOS: u32 = WM_USER;
 /// Static text style "centered" (not in windows-sys).
 const SS_CENTER: u32 = 1;
-const CLIENT: (i32, i32) = (420, 618);
+const CLIENT: (i32, i32) = (828, 556);
 
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
@@ -84,6 +94,22 @@ struct App {
     /// The preset names now in the combo, so it is refilled only when they change.
     eq_names: Vec<String>,
     dsee: HWND,
+    stc: HWND,
+    stc_sens: HWND,
+    stc_timeout: HWND,
+    /// The sensitivity and timeout labels and combos (shown only when both values are known).
+    stc_levels: Vec<HWND>,
+    power: HWND,
+    power_ctrls: Vec<HWND>,
+    power_names: Vec<String>,
+    autopause: HWND,
+    wearing_ctrls: Vec<HWND>,
+    wearing_value: HWND,
+    multipoint: HWND,
+    dev_ctrls: Vec<HWND>,
+    dev_list: HWND,
+    /// The lines now in the list box, so it is refilled only when they change.
+    dev_lines: Vec<String>,
     /// The slider whose last step was a final code other than ENDTRACK: the timer flushes its value if no ENDTRACK follows (wheel).
     step_slider: Option<HWND>,
 }
@@ -149,7 +175,23 @@ impl App {
             eq_ctrls.extend([eq_sliders[i], eq_db[i], eq_freq[i]]);
         }
         let dsee = add("BUTTON", "DSEE (auto)", check, ID_DSEE, [24, 510, 250, 20]);
-        add("BUTTON", "Controls", BS_GROUPBOX as u32, 0, [12, 550, 396, 56]); // task 0014
+        // second column: Speak-to-Chat, power, wearing, multipoint and the device list
+        add("BUTTON", "Controls", BS_GROUPBOX as u32, 0, [420, 12, 396, 420]);
+        let stc = add("BUTTON", "Speak-to-Chat", check, ID_STC, [432, 36, 130, 20]);
+        let stc_sens_label = add("STATIC", "Sensitivity", 0, 0, [572, 38, 62, 18]);
+        let stc_sens = add("COMBOBOX", "", CBS_DROPDOWNLIST as u32 | tab, ID_STC_SENS, [638, 34, 100, 100]);
+        let stc_timeout_label = add("STATIC", "Timeout", 0, 0, [432, 70, 62, 18]);
+        let stc_timeout = add("COMBOBOX", "", CBS_DROPDOWNLIST as u32 | tab, ID_STC_TIMEOUT, [500, 66, 130, 100]);
+        let stc_levels = vec![stc_sens_label, stc_sens, stc_timeout_label, stc_timeout];
+        let power_label = add("STATIC", "Auto power-off", 0, 0, [432, 108, 90, 18]);
+        let power = add("COMBOBOX", "", CBS_DROPDOWNLIST as u32 | tab, ID_POWER, [528, 104, 200, 100]);
+        let autopause = add("BUTTON", "Pause when removed from ears", check, ID_AUTOPAUSE, [432, 140, 300, 20]);
+        let wearing_label = add("STATIC", "Wearing", 0, 0, [432, 172, 70, 18]);
+        let wearing_value = add("STATIC", "", 0, 0, [508, 172, 290, 18]);
+        let multipoint = add("BUTTON", "Multipoint", check, ID_MULTIPOINT, [432, 206, 300, 20]);
+        let dev_label = add("STATIC", "Paired devices", 0, 0, [432, 238, 200, 18]);
+        // LBS_NOSEL without LBS_NOTIFY: read-only, no selection, no notifications
+        let dev_list = add("LISTBOX", "", LBS_NOSEL as u32 | WS_VSCROLL | WS_BORDER, 0, [432, 258, 372, 160]);
         let mut app = App {
             hwnd,
             model: Model::new(),
@@ -184,6 +226,20 @@ impl App {
             eq_freq,
             eq_names: Vec::new(),
             dsee,
+            stc,
+            stc_sens,
+            stc_timeout,
+            stc_levels,
+            power,
+            power_ctrls: vec![power_label, power],
+            power_names: Vec::new(),
+            autopause,
+            wearing_ctrls: vec![wearing_label, wearing_value],
+            wearing_value,
+            multipoint,
+            dev_ctrls: vec![dev_label, dev_list],
+            dev_list,
+            dev_lines: Vec::new(),
             step_slider: None,
         };
         // SAFETY: live controls; the strings outlive the calls. None of these messages notifies the parent (TBM_SETRANGE, CB_ADDSTRING).
@@ -194,6 +250,12 @@ impl App {
             }
             for n in ["Standard", "High", "Low"] {
                 SendMessageW(app.sens, CB_ADDSTRING, 0, wide(n).as_ptr() as LPARAM);
+            }
+            for n in ["Auto", "High", "Low"] {
+                SendMessageW(app.stc_sens, CB_ADDSTRING, 0, wide(n).as_ptr() as LPARAM);
+            }
+            for n in ["Fast", "Mid", "Slow", "Manual off"] {
+                SendMessageW(app.stc_timeout, CB_ADDSTRING, 0, wide(n).as_ptr() as LPARAM);
             }
         }
         app.refresh_devices();
@@ -290,6 +352,55 @@ impl App {
             ShowWindow(self.battery_value, show);
         }
         self.render_sound(&v.sound);
+        self.render_system(&v.system);
+    }
+
+    /// Draws the "Controls" rows; as in `render_sound`, every message sent here is silent (BM_SETCHECK, CB_SETCURSEL, CB_*/LB_* string messages).
+    fn render_system(&mut self, s: &SystemView) {
+        let send = |h: HWND, m: u32, w: WPARAM, l: LPARAM| {
+            // SAFETY: `h` is a live control; every call here passes plain values or a string that outlives it.
+            unsafe { SendMessageW(h, m, w, l) };
+        };
+        let show = |hs: &[HWND], on: bool| {
+            for &h in hs {
+                // SAFETY: live controls.
+                unsafe { ShowWindow(h, if on { SW_SHOW } else { SW_HIDE }) };
+            }
+        };
+        show(&[self.stc], s.stc.enabled.is_some());
+        send(self.stc, BM_SETCHECK, s.stc.enabled.unwrap_or(false) as WPARAM, 0);
+        show(&self.stc_levels, s.stc.levels.is_some());
+        if let Some((sens, timeout)) = s.stc.levels {
+            send(self.stc_sens, CB_SETCURSEL, sens as WPARAM, 0);
+            send(self.stc_timeout, CB_SETCURSEL, timeout as WPARAM, 0);
+        }
+        show(&self.power_ctrls, s.power.is_some());
+        if let Some(p) = &s.power {
+            if self.power_names != p.options {
+                send(self.power, CB_RESETCONTENT, 0, 0);
+                for n in &p.options {
+                    send(self.power, CB_ADDSTRING, 0, wide(n).as_ptr() as LPARAM);
+                }
+                self.power_names = p.options.clone();
+            }
+            send(self.power, CB_SETCURSEL, p.selected.unwrap_or(usize::MAX), 0);
+        }
+        show(&[self.autopause], s.autopause.is_some());
+        send(self.autopause, BM_SETCHECK, s.autopause.unwrap_or(false) as WPARAM, 0);
+        show(&self.wearing_ctrls, s.wearing.is_some());
+        // SAFETY: live control, NUL-terminated string.
+        unsafe { SetWindowTextW(self.wearing_value, wide(s.wearing.as_deref().unwrap_or("")).as_ptr()) };
+        show(&[self.multipoint], s.multipoint.is_some());
+        send(self.multipoint, BM_SETCHECK, s.multipoint.unwrap_or(false) as WPARAM, 0);
+        show(&self.dev_ctrls, s.devices.is_some());
+        let lines = s.devices.as_deref().unwrap_or_default();
+        if self.dev_lines != lines {
+            send(self.dev_list, LB_RESETCONTENT, 0, 0);
+            for l in lines {
+                send(self.dev_list, LB_ADDSTRING, 0, wide(l).as_ptr() as LPARAM);
+            }
+            self.dev_lines = lines.to_vec();
+        }
     }
 
     /// Draws the sound panels. Every message sent here (BM_SETCHECK, CB_SETCURSEL, TBM_SETPOS, CB_*STRING) is silent: none of them notifies the
@@ -363,12 +474,22 @@ impl App {
     /// A user gesture on a button, checkbox or dropdown of the sound panels.
     fn on_sound_command(&mut self, id: usize) {
         // read the picks before the flush below re-renders the combos
-        let (sens, preset) = (self.selection(self.sens), self.selection(self.eq_preset));
-        // a paced slider step still waiting goes out first, so it cannot land after (and undo) this command
-        if let Some(s) = self.step_slider {
-            self.on_scroll(TB_ENDTRACK, s);
-        }
+        let [sens, preset, stc_sens, stc_timeout, power] = [self.sens, self.eq_preset, self.stc_sens, self.stc_timeout, self.power].map(|c| self.selection(c));
+        self.flush_step();
         let c = match id {
+            ID_STC => self.model.stc_toggle(),
+            ID_STC_SENS => self.model.stc_sens(stc_sens),
+            ID_STC_TIMEOUT => self.model.stc_timeout(stc_timeout),
+            ID_POWER => self.model.power_select(power),
+            ID_AUTOPAUSE => self.model.toggle_autopause(),
+            ID_MULTIPOINT => {
+                // only asks: the dialog is shown by WM_CONFIRM once this handler has returned (it runs a message loop of its own)
+                if let Some(on) = self.model.multipoint_ask() {
+                    // SAFETY: posting to our own window only fails if it is gone.
+                    unsafe { PostMessageW(self.hwnd, WM_CONFIRM, on as WPARAM, 0) };
+                }
+                None
+            }
             ID_NC_MODE..=112 => self.model.nc_mode([Mode::Off, Mode::Nc, Mode::Ambient][id - ID_NC_MODE]),
             ID_VOICE => self.model.nc_toggle_voice(),
             ID_AUTO => self.model.nc_toggle_auto(),
@@ -379,6 +500,21 @@ impl App {
         };
         self.send(c);
         self.render(); // puts the control back to the headset's value until the headset confirms
+    }
+
+    /// A paced slider step still waiting goes out first, so it cannot land after (and undo) another command.
+    fn flush_step(&mut self) {
+        if let Some(s) = self.step_slider {
+            self.on_scroll(TB_ENDTRACK, s);
+        }
+    }
+
+    /// The answer of the multipoint dialog.
+    fn on_confirm_answer(&mut self, yes: bool) {
+        self.flush_step();
+        let c = self.model.multipoint_answer(yes);
+        self.send(c);
+        self.render();
     }
 
     fn selection(&self, combo: HWND) -> usize {
@@ -504,7 +640,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         return 0;
     }
     let gesture = msg == WM_COMMAND && matches!((wparam >> 16) as u32, BN_CLICKED | CBN_SELCHANGE);
-    if !(gesture || matches!(msg, WM_HSCROLL | WM_VSCROLL | WM_TIMER | WM_DEVICE_EVENT | WM_DPICHANGED | WM_CLOSE | WM_NCDESTROY)) {
+    if !(gesture
+        || matches!(msg, WM_HSCROLL | WM_VSCROLL | WM_TIMER | WM_DEVICE_EVENT | WM_CONFIRM | WM_CONFIRM_ANSWER | WM_DPICHANGED | WM_CLOSE | WM_NCDESTROY))
+    {
         return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
     }
     // SAFETY: the pointer is set once in `run` to a leaked `App` and cleared in WM_NCDESTROY; only the UI thread gets here.
@@ -517,6 +655,13 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             return 0;
         }
         return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
+    }
+    if msg == WM_CONFIRM {
+        // No `&mut App` exists here (IN_HANDLER is false): the dialog's own message loop dispatches WM_TIMER and WM_DEVICE_EVENT back into this
+        // function, each in a fresh handler. The answer is posted and applied in another fresh handler.
+        let yes = confirm_multipoint(hwnd, wparam != 0);
+        unsafe { PostMessageW(hwnd, WM_CONFIRM_ANSWER, yes as WPARAM, 0) };
+        return 0;
     }
     let app = unsafe { (GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut App).as_mut() };
     let Some(app) = app else { return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) } };
@@ -533,6 +678,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         },
         WM_HSCROLL | WM_VSCROLL => app.on_scroll((wparam & 0xFFFF) as u32, lparam as HWND),
         WM_DEVICE_EVENT => app.pump(),
+        WM_CONFIRM_ANSWER => app.on_confirm_answer(wparam != 0),
         WM_TIMER if wparam == TICK_ID => app.tick(),
         WM_DPICHANGED => {
             // SAFETY: for WM_DPICHANGED lparam points to the suggested RECT.
@@ -562,6 +708,18 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
     }
     IN_HANDLER.set(false);
     0
+}
+
+/// Asks whether to turn multipoint on or off (default: No). Turning it on or off can make the headset drop a connection, maybe the one to this PC.
+fn confirm_multipoint(hwnd: HWND, on: bool) -> bool {
+    let text = format!(
+        "Turn multipoint {}?
+
+The headset may drop a connected device, possibly this PC.",
+        if on { "on" } else { "off" }
+    );
+    // SAFETY: valid NUL-terminated strings and a live owner window; this returns after the user answers.
+    unsafe { MessageBoxW(hwnd, wide(&text).as_ptr(), wide("Multipoint").as_ptr(), MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) == IDYES }
 }
 
 thread_local! {

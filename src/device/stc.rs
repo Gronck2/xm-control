@@ -62,13 +62,18 @@ impl Feature for StcFeature {
         gets()
     }
 
-    /// `on`, `off`, `sens auto|high|low` or `timeout fast|mid|slow|none`.
+    /// `on`, `off`, `sens auto|high|low`, `timeout fast|mid|slow|none` or `levels <sens> <timeout>` (both named, no state needed).
     fn encode_set(&self, state: &DeviceState, value: &str) -> Result<(Table, Vec<u8>), String> {
         let words: Vec<&str> = value.split_whitespace().collect();
         let idx = |list: &[&str], w: &str| list.iter().position(|&x| x == w).map(|i| i as u8);
         match words[..] {
             ["on"] => Ok((Table::T1, vec![0xF8, 0x0C, 0, 1])),
             ["off"] => Ok((Table::T1, vec![0xF8, 0x0C, 1, 1])),
+            ["levels", s, t] => {
+                let s = idx(&SENS, s).ok_or_else(|| format!("expected one of {SENS:?}, got {s:?}"))?;
+                let t = idx(&TIMEOUT, t).ok_or_else(|| format!("expected one of {TIMEOUT:?}, got {t:?}"))?;
+                Ok((Table::T1, vec![0xFC, 0x0C, s, t]))
+            }
             [kind @ ("sens" | "timeout"), w] => {
                 let (list, field) = if kind == "sens" { (&SENS[..], 0) } else { (&TIMEOUT[..], 1) };
                 let v = idx(list, w).ok_or_else(|| format!("expected one of {list:?}, got {w:?}"))?;
@@ -79,7 +84,7 @@ impl Feature for StcFeature {
                 args[field] = v;
                 Ok((Table::T1, vec![0xFC, 0x0C, args[0], args[1]]))
             }
-            _ => Err(format!("expected on, off, sens <auto|high|low> or timeout <fast|mid|slow|none>, got {value:?}")),
+            _ => Err(format!("expected on, off, sens <auto|high|low>, timeout <fast|mid|slow|none> or levels <sens> <timeout>, got {value:?}")),
         }
     }
 }
@@ -160,7 +165,28 @@ mod tests {
         assert_eq!(StcFeature.encode_set(&s, "sens high"), Ok((Table::T1, vec![0xFC, 0x0C, 1, 3])));
         assert_eq!(StcFeature.encode_set(&s, "timeout mid"), Ok((Table::T1, vec![0xFC, 0x0C, 2, 1])));
         assert_eq!(StcFeature.encode_set(&s, "timeout fast"), Ok((Table::T1, vec![0xFC, 0x0C, 2, 0])));
-        for bad in ["", "1", "sens", "sens medium", "sens mid", "timeout auto", "timeout", "on off", "sens auto mid", "ON"] {
+        // `levels` names both bytes, so it needs no known state
+        assert_eq!(StcFeature.encode_set(&s, "levels low none"), Ok((Table::T1, vec![0xFC, 0x0C, 2, 3])));
+        assert_eq!(StcFeature.encode_set(&DeviceState::default(), "levels auto fast"), Ok((Table::T1, vec![0xFC, 0x0C, 0, 0])));
+        for bad in [
+            "levels",
+            "levels auto",
+            "levels auto fast x",
+            "levels mid mid",
+            "levels auto auto",
+            "levels 0 1",
+            "levels fast auto",
+            "",
+            "1",
+            "sens",
+            "sens medium",
+            "sens mid",
+            "timeout auto",
+            "timeout",
+            "on off",
+            "sens auto mid",
+            "ON",
+        ] {
             assert!(StcFeature.encode_set(&s, bad).is_err(), "{bad:?}");
         }
         // without a known sensitivity/timeout a partial SET would guess: refuse
@@ -171,7 +197,7 @@ mod tests {
     #[test]
     fn guard_accepts_the_sets_and_only_those() {
         let s = state(true, 0, 1);
-        for v in ["on", "off", "sens auto", "sens high", "sens low", "timeout fast", "timeout mid", "timeout slow", "timeout none"] {
+        for v in ["on", "off", "sens auto", "sens high", "sens low", "timeout fast", "timeout mid", "timeout slow", "timeout none", "levels high slow"] {
             let (_, p) = StcFeature.encode_set(&s, v).unwrap();
             assert!(check(Table::T1, &p, Mode::Normal).is_ok(), "{v}");
             assert_eq!(check(Table::T1, &p, Mode::ReadOnly).unwrap_err(), GuardError::ReadOnly);

@@ -6,6 +6,8 @@ use crate::device::battery::{Battery, Charge};
 use crate::device::handshake::DeviceInfo;
 use crate::device::ncasm::{Drag, Mode, NcAsm};
 use crate::device::state::DeviceState;
+use crate::device::stc::Stc;
+use crate::device::wearing::Wearing;
 use crate::device::{Command, Event};
 use crate::mdr::guard::EQ_PRESETS;
 use std::time::{Duration, Instant};
@@ -51,6 +53,15 @@ pub struct Model {
     deadline: Option<Instant>,
     /// The last paced final SET of a slider step.
     last_step: Option<Instant>,
+    /// What the UI expects after its last Speak-to-Chat click or pick (a field is `None` when nothing is pending).
+    stc_pending: Stc,
+    /// The auto power-off element (wire value) the UI expects after its last pick.
+    power_pending: Option<u8>,
+    autopause_pending: Option<bool>,
+    multipoint_pending: Option<bool>,
+    /// The multipoint value the user clicked and has not yet confirmed or cancelled. Not dropped by the deadline or an Error (a dialog may stay open);
+    /// only a disconnect or a new connection drops it, so a late answer sends nothing.
+    confirm: Option<bool>,
 }
 
 /// The noise-control rows. `level` is the displayed slider value (1..=20).
@@ -93,6 +104,33 @@ pub struct SoundView {
     pub dsee: Option<DseeView>,
 }
 
+/// Speak-to-Chat. Each part is `None` when the headset does not report it: hide that control.
+#[derive(Debug, PartialEq, Eq)]
+pub struct StcView {
+    pub enabled: Option<bool>,
+    /// (sensitivity 0 auto / 1 high / 2 low, timeout 0 fast / 1 mid / 2 slow / 3 manual off); only when both are known, since a SET names both.
+    pub levels: Option<(u8, u8)>,
+}
+
+/// The auto power-off dropdown: only the options the headset lists.
+#[derive(Debug, PartialEq, Eq)]
+pub struct PowerView {
+    pub options: Vec<String>,
+    pub selected: Option<usize>,
+}
+
+/// The "Controls" rows; `None` = hidden.
+#[derive(Debug, PartialEq, Eq)]
+pub struct SystemView {
+    pub stc: StcView,
+    pub power: Option<PowerView>,
+    pub autopause: Option<bool>,
+    pub wearing: Option<String>,
+    pub multipoint: Option<bool>,
+    /// Name and a connected marker per paired device; the MAC is never shown.
+    pub devices: Option<Vec<String>>,
+}
+
 /// What the view shows. `battery` is `None` when the headset does not advertise it (or it is not read yet): hide the row.
 #[derive(Debug, PartialEq, Eq)]
 pub struct ViewState {
@@ -106,6 +144,7 @@ pub struct ViewState {
     pub mac_button_label: &'static str,
     pub battery: Option<String>,
     pub sound: SoundView,
+    pub system: SystemView,
 }
 
 impl Model {
@@ -126,6 +165,11 @@ impl Model {
             preset_edit: None,
             deadline: None,
             last_step: None,
+            stc_pending: Stc::default(),
+            power_pending: None,
+            autopause_pending: None,
+            multipoint_pending: None,
+            confirm: None,
         }
     }
 
@@ -174,6 +218,22 @@ impl Model {
                 if self.dsee_pending == self.state.dsee {
                     self.dsee_pending = None;
                 }
+                for (p, now) in [(&mut self.stc_pending.enabled, self.state.stc.enabled), (&mut self.autopause_pending, self.state.autopause)] {
+                    if *p == now {
+                        *p = None;
+                    }
+                }
+                for (p, now) in [(&mut self.stc_pending.sensitivity, self.state.stc.sensitivity), (&mut self.stc_pending.timeout, self.state.stc.timeout)] {
+                    if *p == now {
+                        *p = None;
+                    }
+                }
+                if self.power_pending == self.state.power.current {
+                    self.power_pending = None;
+                }
+                if self.multipoint_pending == self.state.multipoint {
+                    self.multipoint_pending = None;
+                }
                 if feature == "eq" {
                     self.preset_edit = None;
                     let eq = self.state.eq.as_ref();
@@ -193,6 +253,7 @@ impl Model {
                 self.state = DeviceState::default();
                 self.synced = false;
                 self.notice = None;
+                self.confirm = None;
                 self.clear_edits();
             }
         }
@@ -200,6 +261,11 @@ impl Model {
 
     fn clear_edits(&mut self) {
         (self.nc_pending, self.level_held, self.dsee_pending, self.eq_edit, self.preset_edit, self.deadline) = (None, false, None, None, None, None);
+        self.clear_system_edits();
+    }
+
+    fn clear_system_edits(&mut self) {
+        (self.stc_pending, self.power_pending, self.autopause_pending, self.multipoint_pending) = (Stc::default(), None, None, None);
     }
 
     fn settle(&mut self) {
@@ -217,6 +283,7 @@ impl Model {
         }
         self.eq_edit = self.eq_edit.take().filter(|e| e.1);
         (self.preset_edit, self.dsee_pending) = (None, None);
+        self.clear_system_edits();
         true
     }
 
@@ -253,6 +320,7 @@ impl Model {
             mac_button_label: if self.show_mac { "Hide" } else { "Show" },
             battery: self.state.battery.map(battery_text),
             sound: self.sound_view(),
+            system: self.system_view(),
         }
     }
 }
@@ -475,6 +543,127 @@ impl Model {
         self.dsee_pending = Some(!auto);
         self.settle();
         Self::set("dsee", if auto { "off" } else { "auto" }.into())
+    }
+}
+
+const STC_SENS: [&str; 3] = ["auto", "high", "low"];
+const STC_TIMEOUT: [&str; 4] = ["fast", "mid", "slow", "none"];
+/// (CLI word, wire element, label) of the auto power-off options this UI knows; offered only if the headset lists the element.
+const POWER: [(&str, u8, &str); 2] = [("removed", 0x10, "When removed from ears"), ("off", 0x11, "Never")];
+
+fn wearing_text(w: Wearing) -> &'static str {
+    match w {
+        Wearing::Normal => "Worn",
+        Wearing::LeftNotWear => "Left not worn",
+        Wearing::RightNotWear => "Right not worn",
+        Wearing::BothNotWear => "Not worn",
+        Wearing::Illegal | Wearing::Unknown(_) => "unknown",
+    }
+}
+
+/// The Speak-to-Chat, power, wearing, multipoint and device-list rows. Same rules as the sound intents. None of these can build a `3C`/`34`
+/// command: they only name the `stc`, `poweroff`, `autopause` and `multipoint` features, and the device list has no intent at all.
+impl Model {
+    fn system_view(&self) -> SystemView {
+        let stc = &self.state.stc;
+        let p = &self.stc_pending;
+        let levels = stc.sensitivity.zip(stc.timeout).map(|(s, t)| (p.sensitivity.unwrap_or(s).min(2), p.timeout.unwrap_or(t).min(3)));
+        let options = self.power_options();
+        let power = (!options.is_empty()).then(|| {
+            let cur = self.power_pending.or(self.state.power.current);
+            PowerView { selected: options.iter().position(|o| Some(o.1) == cur), options: options.iter().map(|o| o.2.to_string()).collect() }
+        });
+        SystemView {
+            stc: StcView { enabled: p.enabled.or(stc.enabled), levels },
+            power,
+            autopause: self.autopause_pending.or(self.state.autopause),
+            wearing: self.state.wearing.map(|w| wearing_text(w).to_string()),
+            multipoint: self.multipoint_pending.or(self.state.multipoint),
+            devices: self.state.devices.as_ref().map(|d| d.iter().map(|d| format!("{}{}", d.name, if d.connected { "  (connected)" } else { "" })).collect()),
+        }
+    }
+
+    /// The power-off options in the headset's order, limited to the ones this UI can name.
+    fn power_options(&self) -> Vec<&'static (&'static str, u8, &'static str)> {
+        let c = self.state.power.candidates.as_deref().unwrap_or_default();
+        c.iter().filter_map(|e| POWER.iter().find(|o| o.1 == *e)).collect()
+    }
+
+    pub fn stc_toggle(&mut self) -> Option<Command> {
+        let on = self.stc_pending.enabled.or(self.state.stc.enabled)?;
+        self.stc_pending.enabled = Some(!on);
+        self.settle();
+        Self::set("stc", if on { "off" } else { "on" }.into())
+    }
+
+    pub fn stc_sens(&mut self, index: usize) -> Option<Command> {
+        STC_SENS.get(index)?;
+        let (s, t) = self.stc_levels()?;
+        if usize::from(s) == index {
+            return None;
+        }
+        self.stc_set_levels(index as u8, t)
+    }
+
+    pub fn stc_timeout(&mut self, index: usize) -> Option<Command> {
+        STC_TIMEOUT.get(index)?;
+        let (s, t) = self.stc_levels()?;
+        if usize::from(t) == index {
+            return None;
+        }
+        self.stc_set_levels(s, index as u8)
+    }
+
+    /// Both values go in one SET so a stale worker state cannot leak into the other byte.
+    fn stc_set_levels(&mut self, s: u8, t: u8) -> Option<Command> {
+        let (sw, tw) = (STC_SENS.get(usize::from(s))?, STC_TIMEOUT.get(usize::from(t))?);
+        self.stc_pending.sensitivity = Some(s);
+        self.stc_pending.timeout = Some(t);
+        self.settle();
+        Self::set("stc", format!("levels {sw} {tw}"))
+    }
+
+    /// The (sensitivity, timeout) the UI expects; `None` unless both are known (the headset needs both in one SET).
+    fn stc_levels(&self) -> Option<(u8, u8)> {
+        let (s, t) = self.state.stc.sensitivity.zip(self.state.stc.timeout)?;
+        Some((self.stc_pending.sensitivity.unwrap_or(s), self.stc_pending.timeout.unwrap_or(t)))
+    }
+
+    /// The power dropdown picked entry `index` (of `SystemView::power.options`).
+    pub fn power_select(&mut self, index: usize) -> Option<Command> {
+        let &(word, element, _) = *self.power_options().get(index)?;
+        if self.power_pending.or(self.state.power.current) == Some(element) {
+            return None;
+        }
+        self.power_pending = Some(element);
+        self.settle();
+        Self::set("poweroff", word.into())
+    }
+
+    pub fn toggle_autopause(&mut self) -> Option<Command> {
+        let on = self.autopause_pending.or(self.state.autopause)?;
+        self.autopause_pending = Some(!on);
+        self.settle();
+        Self::set("autopause", if on { "off" } else { "on" }.into())
+    }
+
+    /// The user clicked the multipoint box. Sends nothing: returns the value to ask about (true = turn on) when a new question must be shown;
+    /// `None` when multipoint is unknown or a question is already open.
+    pub fn multipoint_ask(&mut self) -> Option<bool> {
+        if self.confirm.is_some() {
+            return None;
+        }
+        let target = !self.multipoint_pending.or(self.state.multipoint)?;
+        self.confirm = Some(target);
+        Some(target)
+    }
+
+    /// The answer to the question. Only "yes" while the question is still open (the link may have dropped meanwhile) sends the SET.
+    pub fn multipoint_answer(&mut self, yes: bool) -> Option<Command> {
+        let target = self.confirm.take().filter(|_| yes && self.state.multipoint.is_some())?;
+        self.multipoint_pending = Some(target);
+        self.settle();
+        Self::set("multipoint", if target { "on" } else { "off" }.into())
     }
 }
 
@@ -955,6 +1144,173 @@ mod tests {
             }
             let f = FEATURES.iter().find(|f| f.name() == feature).expect("known feature");
             let (table, payload) = f.encode_set(&sound_state(), &value).unwrap_or_else(|e| panic!("{feature} {value}: {e}"));
+            check(table, &payload, GMode::Normal).unwrap_or_else(|e| panic!("{feature} {value}: {e:?}"));
+        }
+    }
+
+    fn system_state() -> DeviceState {
+        use crate::device::peripheral::PairedDevice;
+        use crate::device::power::Power;
+        let dev = |name: &str, connected| PairedDevice { mac: "AA:BB:CC:DD:EE:FF".into(), connected, class: 0, name: name.into() };
+        DeviceState {
+            stc: Stc { enabled: Some(false), sensitivity: Some(0), timeout: Some(1) },
+            power: Power { candidates: Some(vec![0x10, 0x11, 0x42]), current: Some(0x11) },
+            autopause: Some(false),
+            wearing: Some(Wearing::Normal),
+            multipoint: Some(true),
+            devices: Some(vec![dev("PC", true), dev("Phone", false)]),
+            ..sound_state()
+        }
+    }
+
+    #[test]
+    fn nothing_advertised_hides_every_system_control() {
+        let s = with(DeviceState::default()).view().system;
+        assert_eq!(
+            s,
+            SystemView { stc: StcView { enabled: None, levels: None }, power: None, autopause: None, wearing: None, multipoint: None, devices: None }
+        );
+        // no usable power option, or only one Speak-to-Chat half known
+        let mut st = system_state();
+        st.power.candidates = Some(vec![0x42]);
+        st.stc.timeout = None;
+        let s = with(st).view().system;
+        assert_eq!((s.power, s.stc.enabled, s.stc.levels), (None, Some(false), None));
+    }
+
+    #[test]
+    fn system_rows_show_the_state_and_follow_events() {
+        let mut m = with(system_state());
+        let s = m.view().system;
+        assert_eq!((s.stc.enabled, s.stc.levels, s.autopause, s.multipoint), (Some(false), Some((0, 1)), Some(false), Some(true)));
+        // only the offered, known options, in the headset's order
+        let p = s.power.unwrap();
+        assert_eq!((p.options.as_slice(), p.selected), (&["When removed from ears".to_string(), "Never".to_string()][..], Some(1)));
+        assert_eq!(s.wearing.as_deref(), Some("Worn"));
+        // names and a connected marker, no MAC
+        let d = s.devices.unwrap();
+        assert_eq!(d, ["PC  (connected)", "Phone"]);
+        assert!(d.iter().all(|l| !l.contains("AA:BB")));
+        // the headset changes everything: the view follows
+        let mut st = system_state();
+        st.stc = Stc { enabled: Some(true), sensitivity: Some(2), timeout: Some(3) };
+        st.power.current = Some(0x10);
+        st.autopause = Some(true);
+        st.wearing = Some(Wearing::LeftNotWear);
+        st.multipoint = Some(false);
+        m.apply(Event::StateChanged { feature: "stc", state: st });
+        let s = m.view().system;
+        assert_eq!((s.stc.enabled, s.stc.levels, s.autopause, s.multipoint), (Some(true), Some((2, 3)), Some(true), Some(false)));
+        assert_eq!((s.power.unwrap().selected, s.wearing.as_deref()), (Some(0), Some("Left not worn")));
+    }
+
+    #[test]
+    fn wearing_codes_map_to_text() {
+        let t = |w| wearing_text(w);
+        assert_eq!(
+            [Wearing::Normal, Wearing::LeftNotWear, Wearing::RightNotWear, Wearing::BothNotWear].map(t),
+            ["Worn", "Left not worn", "Right not worn", "Not worn"]
+        );
+        assert_eq!((t(Wearing::Unknown(9)), t(Wearing::Illegal)), ("unknown", "unknown"));
+    }
+
+    #[test]
+    fn system_intents_become_set_commands_and_predict() {
+        let mut m = with(system_state());
+        assert_eq!(cmd(m.stc_toggle()), ("stc".into(), "on".into()));
+        assert_eq!(cmd(m.stc_toggle()).1, "off"); // a quick second click goes from the prediction
+        assert_eq!(cmd(m.stc_sens(1)).1, "levels high mid"); // both values, the other one from the state
+        assert_eq!(cmd(m.stc_timeout(3)).1, "levels high none");
+        assert!(m.stc_sens(1).is_none() && m.stc_timeout(3).is_none() && m.stc_sens(3).is_none() && m.stc_timeout(4).is_none());
+        assert_eq!(m.view().system.stc.levels, Some((1, 3)));
+        assert_eq!(cmd(m.power_select(0)), ("poweroff".into(), "removed".into()));
+        assert!(m.power_select(0).is_none() && m.power_select(2).is_none());
+        assert_eq!(m.view().system.power.unwrap().selected, Some(0));
+        assert_eq!(cmd(m.power_select(1)).1, "off");
+        assert_eq!(cmd(m.toggle_autopause()), ("autopause".into(), "on".into()));
+        assert_eq!(cmd(m.toggle_autopause()).1, "off");
+        // a prediction goes when the headset reports it, and at the deadline when it never does
+        let mut st = system_state();
+        st.stc.sensitivity = Some(1);
+        m.apply(Event::StateChanged { feature: "stc", state: st });
+        assert_eq!((m.stc_pending.sensitivity, m.stc_pending.timeout), (None, Some(3)));
+        assert!(m.expire(Instant::now() + Duration::from_secs(2)));
+        assert_eq!(m.view().system.stc, StcView { enabled: Some(false), levels: Some((1, 1)) });
+        // unknown state: nothing to send
+        let mut none = with(DeviceState::default());
+        assert!(none.stc_toggle().is_none() && none.stc_sens(1).is_none() && none.power_select(0).is_none() && none.toggle_autopause().is_none());
+        assert!(none.multipoint_ask().is_none());
+    }
+
+    #[test]
+    fn multipoint_sends_only_after_a_yes() {
+        let mut m = with(system_state());
+        // the click only asks: asking again while the question is open does nothing
+        assert_eq!(m.multipoint_ask(), Some(false));
+        assert_eq!(m.multipoint_ask(), None);
+        assert_eq!(m.view().system.multipoint, Some(true)); // the box is not changed by asking
+        // cancel: nothing sent, nothing predicted, and the next click asks again
+        assert!(m.multipoint_answer(false).is_none());
+        assert_eq!(m.view().system.multipoint, Some(true));
+        assert!(m.multipoint_answer(true).is_none()); // a stray answer without a question
+        assert_eq!(m.multipoint_ask(), Some(false));
+        assert_eq!(cmd(m.multipoint_answer(true)), ("multipoint".into(), "off".into()));
+        assert_eq!(m.view().system.multipoint, Some(false));
+        // the next question goes from the prediction
+        assert_eq!(m.multipoint_ask(), Some(true));
+        assert_eq!(cmd(m.multipoint_answer(true)).1, "on");
+        // a question open while the link drops: the late answer sends nothing
+        let mut m = with(system_state());
+        m.multipoint_ask();
+        m.apply(Event::Error(crate::device::CommandError::NotSupported("x".into()))); // a notice does not cancel it
+        assert!(m.multipoint_answer(true).is_some());
+        m.multipoint_ask();
+        m.apply(Event::Disconnected("lost".into()));
+        assert!(m.multipoint_answer(true).is_none());
+        // a headset update and the deadline clear the prediction only after the answer
+        let mut m = with(system_state());
+        m.multipoint_ask();
+        m.multipoint_answer(true);
+        m.apply(Event::StateChanged { feature: "multipoint", state: DeviceState { multipoint: Some(false), ..system_state() } });
+        assert_eq!(m.multipoint_pending, None);
+    }
+
+    /// No intent of the system panels builds a Table 2 `3C` (connect/unpair) or `34` command, and every command passes the guard.
+    #[test]
+    fn system_commands_encode_and_pass_the_guard_and_never_3c_or_34() {
+        use crate::device::FEATURES;
+        use crate::mdr::guard::{Mode as GMode, check};
+        let one = |f: &dyn Fn(&mut Model) -> Option<Command>| f(&mut with(system_state()));
+        let ask = |yes: bool| {
+            let mut m = with(system_state());
+            m.multipoint_ask();
+            m.multipoint_answer(yes)
+        };
+        let cmds = vec![
+            one(&|m| m.stc_toggle()),
+            one(&|m| m.stc_sens(1)),
+            one(&|m| m.stc_sens(2)),
+            one(&|m| m.stc_timeout(0)),
+            one(&|m| m.stc_timeout(2)),
+            one(&|m| m.stc_timeout(3)),
+            one(&|m| m.power_select(0)),
+            one(&|m| m.toggle_autopause()),
+            ask(true),
+        ];
+        assert!(ask(false).is_none() && cmds.iter().all(Option::is_some));
+        let mut all = cmds;
+        let mut off = system_state();
+        (off.stc.enabled, off.autopause, off.multipoint, off.power.current) = (Some(true), Some(true), Some(false), Some(0x10));
+        all.extend([with(off.clone()).power_select(1), with(off.clone()).stc_toggle(), with(off.clone()).toggle_autopause(), {
+            let mut m = with(off);
+            m.multipoint_ask();
+            m.multipoint_answer(true)
+        }]);
+        for c in all.into_iter().flatten() {
+            let Command::Set { feature, value } = c else { panic!("{c:?}") };
+            let f = FEATURES.iter().find(|f| f.name() == feature).expect("known feature");
+            let (table, payload) = f.encode_set(&system_state(), &value).unwrap_or_else(|e| panic!("{feature} {value}: {e}"));
+            assert!(!matches!(payload.first(), Some(0x3C | 0x34)), "{feature} {value}: {payload:02X?}");
             check(table, &payload, GMode::Normal).unwrap_or_else(|e| panic!("{feature} {value}: {e:?}"));
         }
     }
