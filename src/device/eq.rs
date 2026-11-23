@@ -58,6 +58,8 @@ fn parse_cap(args: &[u8]) -> Result<Cap, String> {
 /// The name of a preset id (EqPresetId in the reference); unknown ids show as hex.
 fn preset_label(id: u8) -> String {
     let name = match id {
+        0x00 => "OFF",
+        0x20 => "GAMING",
         0x30 => "HEAVY",
         0x31 => "CLEAR",
         0x32 => "HARD",
@@ -285,10 +287,12 @@ mod tests {
         assert!(parse_cap(&cap_args()[..20]).is_err());
         assert!(parse_cap(&[10, 13]).is_err());
         // presets without a name are labelled by id, so the UI list and `preset HEAVY` still work
-        let unnamed = parse_cap(&[10, 13, 4, 0x30, 0, 0xA0, 1, b' ', 0xA2, 0, 0x99, 0]).unwrap();
+        let unnamed = parse_cap(&[10, 13, 6, 0x00, 0, 0x30, 0, 0x20, 0, 0xA0, 1, b' ', 0xA2, 0, 0x99, 0]).unwrap();
         let names: Vec<_> = unnamed.presets.iter().map(|p| p.1.as_str()).collect();
-        assert_eq!(names, ["HEAVY", "CUSTOM", "USER2", "0x99"]);
+        assert_eq!(names, ["OFF", "HEAVY", "GAMING", "CUSTOM", "USER2", "0x99"]);
         assert_eq!(preset_id(&unnamed, "heavy"), Ok(0x30));
+        assert_eq!(preset_id(&unnamed, "off"), Ok(0x00));
+        assert_eq!(preset_id(&unnamed, "gaming"), Ok(0x20));
         assert_eq!(parse_freqs(&[2, 1, 0, 31, 1, 3, 0xE8]).unwrap(), [31, 1000]);
         assert!(parse_freqs(&[2, 1, 0, 31, 1, 3]).is_err());
     }
