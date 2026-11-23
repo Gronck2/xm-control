@@ -51,7 +51,7 @@ impl Feature for PowerOffFeature {
         Parsed::Changed
     }
 
-    fn after_set(&self) -> Vec<Get> {
+    fn after_set(&self, _: &DeviceInfo) -> Vec<Get> {
         vec![self.reread()]
     }
 
@@ -99,7 +99,7 @@ impl Feature for AutoPauseFeature {
         Parsed::Changed
     }
 
-    fn after_set(&self) -> Vec<Get> {
+    fn after_set(&self, _: &DeviceInfo) -> Vec<Get> {
         vec![self.reread()]
     }
 

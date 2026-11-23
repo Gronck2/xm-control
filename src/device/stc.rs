@@ -58,7 +58,7 @@ impl Feature for StcFeature {
         Parsed::Changed
     }
 
-    fn after_set(&self) -> Vec<Get> {
+    fn after_set(&self, _: &DeviceInfo) -> Vec<Get> {
         gets()
     }
 

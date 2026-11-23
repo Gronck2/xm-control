@@ -144,7 +144,7 @@ impl Feature for EqFeature {
         }
     }
 
-    fn after_set(&self) -> Vec<Get> {
+    fn after_set(&self, _: &DeviceInfo) -> Vec<Get> {
         vec![self.reread()]
     }
 

@@ -106,7 +106,7 @@ fn probe(out: &str, device: Option<&str>, keep_mac: bool) -> Result<(), String> 
 }
 
 /// Dev CLI over the device worker (ADR 0004): `--get [feature]` prints the device and its state after the initial sync, `--set <feature> <value>`
-/// sends one SET and logs events for a few seconds, `--watch [secs]` logs events (default 60 s). `--get` and `--watch` send no command beyond the
+/// sends one SET (`--set multipoint` also needs `--yes`) and logs events for a few seconds, `--watch [secs]` logs events (default 60 s). `--get` and `--watch` send no command beyond the
 /// initial read-only sync. The feature name is checked before connecting, so an unknown one never reaches the headset.
 fn device_cli(args: &[String], device: Option<&str>) -> Result<(), String> {
     let after = |flag: &str, n: usize| args.iter().position(|a| a == flag).and_then(|i| args.get(i + n)).filter(|v| !v.starts_with("--"));
@@ -117,6 +117,9 @@ fn device_cli(args: &[String], device: Option<&str>) -> Result<(), String> {
         let mut rest = args[i + 1..].iter();
         let mut text = vec![value.as_str()];
         while let Some(a) = rest.next() {
+            if a == "--yes" {
+                continue;
+            }
             if a == "--device" {
                 rest.next();
             } else {
@@ -129,6 +132,10 @@ fn device_cli(args: &[String], device: Option<&str>) -> Result<(), String> {
     } else {
         (None, Duration::ZERO)
     };
+    if after("--set", 1).is_some_and(|f| f == "multipoint") && !args.iter().any(|a| a == "--yes") {
+        // stands in for the UI confirmation: toggling multipoint can drop a connection, possibly this PC's own
+        return Err("--set multipoint can disconnect a device (maybe this PC); add --yes to confirm".into());
+    }
     if args.iter().any(|a| a == "--set") && command.is_none() {
         return Err("--set needs <feature> <value>".into());
     }
