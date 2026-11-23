@@ -3,6 +3,7 @@
 //! receiver (the optional wake callback says "something is waiting", e.g. to post a window message).
 
 pub mod battery;
+pub mod eq;
 pub mod feature;
 pub mod handshake;
 #[cfg(test)]
@@ -21,7 +22,7 @@ use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::time::{Duration, Instant};
 
 /// All features, in sync order. Feature tasks add one line each.
-pub static FEATURES: &[&dyn Feature] = &[&battery::BatteryFeature, &ncasm::NcAsmFeature];
+pub static FEATURES: &[&dyn Feature] = &[&battery::BatteryFeature, &ncasm::NcAsmFeature, &eq::EqFeature];
 
 /// How long the worker waits for incoming frames between checks of the command channel.
 /// shortcut: a command can wait up to this long before it is sent; fine for button-driven UIs, use a wakeable transport read if it ever matters.
@@ -245,6 +246,9 @@ impl Worker {
                 // the new value arrives as a reply or NTFY; the state is not guessed
                 let frames = s.poll_notifications(Duration::ZERO)?;
                 self.dispatch(frames)?;
+                for g in f.after_set() {
+                    self.fetch(s, &g)?;
+                }
             }
         }
         Ok(())

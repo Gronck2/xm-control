@@ -32,6 +32,11 @@ pub trait Feature: Sync {
         false
     }
 
+    /// GETs to run right after a successful SET (a re-read of what the headset accepted). Default: none.
+    fn after_set(&self) -> Vec<Get> {
+        Vec::new()
+    }
+
     /// Turns a user value (CLI text) into the SET payload, starting from the current `state` for fields the user did not name.
     /// It still goes through the guard in `Mode::Normal` before it is sent.
     fn encode_set(&self, state: &DeviceState, value: &str) -> Result<(Table, Vec<u8>), String>;
