@@ -32,8 +32,6 @@ const COMMANDS: &[ProbeCmd] = &[
     cmd("battery level", T1, &[0x22, 0x00], &[(T1, 0x20)]),
     cmd("battery level with threshold", T1, &[0x22, 0x08], &[(T1, 0x28)]),
     cmd("noise cancelling, noise adaptation", T1, &[0x66, 0x19], &[(T1, 0x6D)]),
-    cmd("noise cancelling", T1, &[0x66, 0x17], &[(T1, 0x6B)]),
-    cmd("ambient sound only", T1, &[0x66, 0x22], &[(T1, 0x67)]),
     cmd("equalizer band frequencies", T1, &[0x5A, 0x00], &[]),
     cmd("equalizer parameters", T1, &[0x56, 0x00], &[]),
     cmd("equalizer status", T1, &[0x52, 0x00], &[]),

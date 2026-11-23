@@ -32,8 +32,9 @@ pub trait Feature: Sync {
         false
     }
 
-    /// Turns a user value (CLI text) into the SET payload. It still goes through the guard in `Mode::Normal` before it is sent.
-    fn encode_set(&self, value: &str) -> Result<(Table, Vec<u8>), String>;
+    /// Turns a user value (CLI text) into the SET payload, starting from the current `state` for fields the user did not name.
+    /// It still goes through the guard in `Mode::Normal` before it is sent.
+    fn encode_set(&self, state: &DeviceState, value: &str) -> Result<(Table, Vec<u8>), String>;
 }
 
 pub fn supported(f: &dyn Feature, info: &DeviceInfo) -> bool {

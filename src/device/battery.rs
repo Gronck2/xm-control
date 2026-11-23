@@ -68,7 +68,7 @@ impl Feature for BatteryFeature {
         Parsed::Changed
     }
 
-    fn encode_set(&self, _: &str) -> Result<(Table, Vec<u8>), String> {
+    fn encode_set(&self, _: &DeviceState, _: &str) -> Result<(Table, Vec<u8>), String> {
         Err("battery is read-only".into())
     }
 
@@ -168,7 +168,7 @@ mod tests {
         let mut none = info.clone();
         none.t1_functions.retain(|&(f, _)| f != 0x20);
         assert!(!crate::device::feature::supported(&BatteryFeature, &none));
-        assert!(BatteryFeature.encode_set("50").is_err());
+        assert!(BatteryFeature.encode_set(&DeviceState::default(), "50").is_err());
     }
 
     #[test]
