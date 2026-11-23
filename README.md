@@ -7,9 +7,8 @@ Not affiliated with or endorsed by Sony. "Sony" and "WH-1000XM6" are trademarks 
 
 ## Status
 
-Early development. On `main` today: the window (pick the headset, Connect/Disconnect, model, firmware, battery) and a
-read-only developer CLI. The feature panels below are implemented on open pull requests and are merged one by one after
-each control has been checked on real headphones.
+Early development. The window (pick the headset, Connect/Disconnect, model, firmware, battery and the panels below) and a
+read-only developer CLI. Each control has been checked on real headphones.
 
 | Feature | Notes |
 |---|---|
