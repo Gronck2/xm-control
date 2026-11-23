@@ -1,5 +1,6 @@
 ; Inno Setup script for XM-Control-Setup-<version>.exe (a per-user install, no admin rights).
-;   ISCC.exe /DAppVersion=0.1.0 /DSourceExe=..\target\release\xm-control.exe /O..\dist packaging\installer.iss
+; From the repository root (/O is relative to the current directory, SourceExe to this script):
+;   ISCC.exe /DAppVersion=0.1.0 /DSourceExe=..\target\release\xm-control.exe /Odist packaging\installer.iss
 
 #ifndef AppVersion
   #error Pass /DAppVersion=x.y.z
