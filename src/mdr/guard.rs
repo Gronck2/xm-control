@@ -81,25 +81,33 @@ const ALLOW: &[(Table, &[u8], Kind)] = &[
     (Table::T1, &[0x52, 0x00], Kind::Get),              // EQ status
     (Table::T1, &[0xE6, 0x01], Kind::Get),              // DSEE parameter
     (Table::T1, &[0xE2, 0x01], Kind::Get),              // DSEE status
-    (Table::T1, &[0xF6, 0x0C], Kind::Get),              // speak-to-chat enable
-    (Table::T1, &[0xFA, 0x0C], Kind::Get),              // speak-to-chat sensitivity
-    (Table::T1, &[0x20, 0x04], Kind::Get),              // auto power-off capability
-    (Table::T1, &[0x26, 0x04], Kind::Get),              // auto power-off parameter
-    (Table::T1, &[0x20, 0x05], Kind::Get),              // auto power-off (wearing) capability
-    (Table::T1, &[0x26, 0x05], Kind::Get),              // auto power-off (wearing) parameter
-    (Table::T1, &[0xF6, 0x01], Kind::Get),              // auto pause on removal
-    (Table::T1, &[0x12, 0x02], Kind::Get),              // codec indicator
-    (Table::T1, &[0xD6, 0x01], Kind::Get),              // general setting 1
-    (Table::T1, &[0xD6, 0x02], Kind::Get),              // general setting 2
-    (Table::T1, &[0xD6, 0x03], Kind::Get),              // general setting 3
-    (Table::T1, &[0xD6, 0x04], Kind::Get),              // general setting 4
-    (Table::T2, &[0xF2, 0x00], Kind::Get),              // wearing status
-    (Table::T2, &[0x36, 0x01], Kind::Get),              // multipoint (source switch control)
-    (Table::T2, &[0x36, 0x02], Kind::Get),              // paired device list
-    (Table::T2, &[0x32, 0x02], Kind::Get),              // pairing mode status
-    (Table::T2, &[0x5A, 0x00], Kind::Get),              // safe listening HBS_1
-    (Table::T2, &[0x5A, 0x02], Kind::Get),              // safe listening HBS_2
+    // DSEE SET: the only E8 rows. E8 is also the listening-mode SET (XM6 reboot hazard), so these are whole payloads (no argument bytes), never a prefix.
+    (Table::T1, &[0xE8, 0x01, 0x00], Kind::Set(no_args)), // DSEE OFF (src/device/dsee.rs)
+    (Table::T1, &[0xE8, 0x01, 0x01], Kind::Set(no_args)), // DSEE AUTO
+    (Table::T1, &[0xF6, 0x0C], Kind::Get),                // speak-to-chat enable
+    (Table::T1, &[0xFA, 0x0C], Kind::Get),                // speak-to-chat sensitivity
+    (Table::T1, &[0x20, 0x04], Kind::Get),                // auto power-off capability
+    (Table::T1, &[0x26, 0x04], Kind::Get),                // auto power-off parameter
+    (Table::T1, &[0x20, 0x05], Kind::Get),                // auto power-off (wearing) capability
+    (Table::T1, &[0x26, 0x05], Kind::Get),                // auto power-off (wearing) parameter
+    (Table::T1, &[0xF6, 0x01], Kind::Get),                // auto pause on removal
+    (Table::T1, &[0x12, 0x02], Kind::Get),                // codec indicator
+    (Table::T1, &[0xD6, 0x01], Kind::Get),                // general setting 1
+    (Table::T1, &[0xD6, 0x02], Kind::Get),                // general setting 2
+    (Table::T1, &[0xD6, 0x03], Kind::Get),                // general setting 3
+    (Table::T1, &[0xD6, 0x04], Kind::Get),                // general setting 4
+    (Table::T2, &[0xF2, 0x00], Kind::Get),                // wearing status
+    (Table::T2, &[0x36, 0x01], Kind::Get),                // multipoint (source switch control)
+    (Table::T2, &[0x36, 0x02], Kind::Get),                // paired device list
+    (Table::T2, &[0x32, 0x02], Kind::Get),                // pairing mode status
+    (Table::T2, &[0x5A, 0x00], Kind::Get),                // safe listening HBS_1
+    (Table::T2, &[0x5A, 0x02], Kind::Get),                // safe listening HBS_2
 ];
+
+/// For SET rows that are a complete payload: no bytes may follow.
+fn no_args(a: &[u8]) -> bool {
+    a.is_empty()
+}
 
 /// The 7 bytes of an NC/ASM `68 19` SET (also used to check replies): valueChange, totalEffect, mode, ambientMode, level 1..=20, autoAsm, sensitivity.
 pub fn nc_set_args(a: &[u8]) -> bool {
@@ -250,11 +258,59 @@ mod tests {
     }
 
     #[test]
+    fn only_the_two_dsee_payloads_start_with_e8() {
+        for p in [&[0xE8, 0x01, 0x00][..], &[0xE8, 0x01, 0x01]] {
+            assert!(check(Table::T1, p, Mode::Normal).is_ok(), "{p:02X?}");
+            assert_eq!(check(Table::T1, p, Mode::ReadOnly).unwrap_err(), GuardError::ReadOnly);
+            assert_eq!(check(Table::T2, p, Mode::Normal).unwrap_err(), GuardError::NotAllowed);
+        }
+        // every other (second, third) pair, in both tables and both modes
+        for (b, c) in (0..=255u8).flat_map(|b| (0..=255u8).map(move |c| (b, c))).filter(|&p| p != (1, 0) && p != (1, 1)) {
+            for t in [Table::T1, Table::T2] {
+                for m in [Mode::Normal, Mode::ReadOnly] {
+                    assert_eq!(check(t, &[0xE8, b, c], m).unwrap_err(), GuardError::NotAllowed, "{t:?} E8 {b:02X} {c:02X}");
+                }
+            }
+        }
+        // listening modes (BGM, upmix, voice contents, sound-leak), other lengths, and the neighbouring reads
+        for p in [
+            &[0xE8, 0x03, 0x00][..],
+            &[0xE8, 0x03, 0x01],
+            &[0xE8, 0x09, 0x00],
+            &[0xE8, 0x04, 0x00],
+            &[0xE8, 0x06, 0x00],
+            &[0xE8, 0x07, 0x00],
+            &[0xE8, 0x01, 0x02],
+            &[0xE8],
+            &[0xE8, 0x01],
+            &[0xE8, 0x01, 0x00, 0x00],
+            &[0xE8, 0x01, 0x01, 0x00],
+            &[0xE8, 0x03, 0x01, 0x02],
+            &[0xE2, 0x03],
+            &[0xE2, 0x04],
+            &[0xE6, 0x03],
+            &[0xE6, 0x00],
+            &[0xE6, 0x02],
+            &[0xE6, 0x05],
+            &[0xE0, 0x01],
+        ] {
+            for m in [Mode::Normal, Mode::ReadOnly] {
+                assert_eq!(check(Table::T1, p, m).unwrap_err(), GuardError::NotAllowed, "{p:02X?}");
+            }
+        }
+        for p in [&[0xE6, 0x01][..], &[0xE2, 0x01]] {
+            assert!(check(Table::T1, p, Mode::ReadOnly).is_ok());
+        }
+    }
+
+    #[test]
     fn allowlist_never_intersects_denylist_or_listening_modes() {
         for (table, payload, _) in ALLOW {
             assert!(!denied(*table, payload), "{table:?} {payload:02X?}");
-            assert!(!(*table == Table::T1 && payload[0] == 0xE8));
         }
+        // E8 is also the listening-mode SET: only the two DSEE payloads may start with it
+        let e8: Vec<_> = ALLOW.iter().filter(|r| r.1[0] == 0xE8).map(|r| (r.0, r.1)).collect();
+        assert_eq!(e8, [(Table::T1, &[0xE8, 0x01, 0x00][..]), (Table::T1, &[0xE8, 0x01, 0x01][..])]);
         // a SET row's argument bytes must not turn it into a denied command (the denylist looks at up to the third byte)
         for (table, prefix, _) in ALLOW.iter().filter(|r| matches!(r.2, Kind::Set(_))) {
             for b in 0..=255u8 {

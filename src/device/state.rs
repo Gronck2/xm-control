@@ -13,6 +13,10 @@ pub struct DeviceState {
     pub eq_freqs: Option<Vec<u16>>,
     /// An EQ status frame said the EQ is disabled; SET is not sent then.
     pub eq_disabled: bool,
+    /// DSEE: true = AUTO, false = OFF.
+    pub dsee: Option<bool>,
+    /// A DSEE status frame said it is unavailable; SET is not sent then.
+    pub dsee_disabled: bool,
     /// Payload (after the two id bytes) of the last frame the test feature accepted.
     #[cfg(test)]
     pub dummy: Option<Vec<u8>>,
