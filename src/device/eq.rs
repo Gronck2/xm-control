@@ -47,10 +47,28 @@ fn parse_cap(args: &[u8]) -> Result<Cap, String> {
     for _ in 0..*count {
         let [id, len, tail @ ..] = rest else { return Err(format!("EQ capability is cut off: {args:02X?}")) };
         let (name, tail) = tail.split_at_checked(*len as usize).ok_or_else(|| format!("EQ capability is cut off: {args:02X?}"))?;
-        presets.push((*id, String::from_utf8_lossy(name).into_owned()));
+        // the headset may send no name (the official app labels presets by id): fall back to the id's name
+        let name = String::from_utf8_lossy(name).trim().to_string();
+        presets.push((*id, if name.is_empty() { preset_label(*id) } else { name }));
         rest = tail;
     }
     Ok(Cap { bands: *bands, steps: *steps, presets })
+}
+
+/// The name of a preset id (EqPresetId in the reference); unknown ids show as hex.
+fn preset_label(id: u8) -> String {
+    let name = match id {
+        0x00 => "OFF",
+        0x20 => "GAMING",
+        0x30 => "HEAVY",
+        0x31 => "CLEAR",
+        0x32 => "HARD",
+        0x33 => "SOFT",
+        0xA0 => "CUSTOM",
+        0xA1..=0xA5 => return format!("USER{}", id - 0xA0),
+        _ => return format!("{id:#04X}"),
+    };
+    name.into()
 }
 
 /// `<count> {<type> <freq u16 BE>}...`; the type byte (HZ on the XM6) is not kept.
@@ -268,6 +286,13 @@ mod tests {
         assert_eq!(cap.presets.len(), 6);
         assert!(parse_cap(&cap_args()[..20]).is_err());
         assert!(parse_cap(&[10, 13]).is_err());
+        // presets without a name are labelled by id, so the UI list and `preset HEAVY` still work
+        let unnamed = parse_cap(&[10, 13, 6, 0x00, 0, 0x30, 0, 0x20, 0, 0xA0, 1, b' ', 0xA2, 0, 0x99, 0]).unwrap();
+        let names: Vec<_> = unnamed.presets.iter().map(|p| p.1.as_str()).collect();
+        assert_eq!(names, ["OFF", "HEAVY", "GAMING", "CUSTOM", "USER2", "0x99"]);
+        assert_eq!(preset_id(&unnamed, "heavy"), Ok(0x30));
+        assert_eq!(preset_id(&unnamed, "off"), Ok(0x00));
+        assert_eq!(preset_id(&unnamed, "gaming"), Ok(0x20));
         assert_eq!(parse_freqs(&[2, 1, 0, 31, 1, 3, 0xE8]).unwrap(), [31, 1000]);
         assert!(parse_freqs(&[2, 1, 0, 31, 1, 3]).is_err());
     }
