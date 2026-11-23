@@ -28,11 +28,14 @@ impl std::fmt::Display for SessionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             SessionError::Io(e) => write!(f, "I/O error: {e}"),
-            SessionError::Frame(e) => write!(f, "frame error: {e:?}"),
-            SessionError::Timeout | SessionError::NoReply => write!(f, "timed out"),
+            SessionError::Frame(e) => write!(f, "could not build the command: {e}"),
+            SessionError::Timeout => write!(f, "the headset did not answer"),
+            SessionError::NoReply => write!(f, "the headset acknowledged but did not reply"),
         }
     }
 }
+
+impl std::error::Error for SessionError {}
 
 impl From<io::Error> for SessionError {
     fn from(e: io::Error) -> Self {
@@ -149,6 +152,15 @@ impl<T: Transport> Session<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_error_display_is_readable() {
+        let all = [SessionError::Io(io::Error::other("x")), SessionError::Frame(FrameError::TooShort), SessionError::Timeout, SessionError::NoReply];
+        for e in &all {
+            assert!(!e.to_string().is_empty() && e.to_string() != format!("{e:?}"));
+        }
+        assert_ne!(SessionError::Timeout.to_string(), SessionError::NoReply.to_string());
+    }
     use crate::mdr::frame::pack_raw_for_tests as pack_raw;
     use crate::mdr::guard::{Mode, Table, check};
 

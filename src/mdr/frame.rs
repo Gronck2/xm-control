@@ -22,6 +22,21 @@ pub enum FrameError {
     LengthMismatch,
 }
 
+impl std::fmt::Display for FrameError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            FrameError::Markers => "missing frame start or end marker",
+            FrameError::BadEscape => "invalid escape sequence",
+            FrameError::TooShort => "frame too short",
+            FrameError::TooLarge => "frame too large",
+            FrameError::BadChecksum => "checksum mismatch",
+            FrameError::LengthMismatch => "length field does not match the frame",
+        })
+    }
+}
+
+impl std::error::Error for FrameError {}
+
 #[derive(Debug, PartialEq, Eq)]
 pub struct Frame {
     pub data_type: u8,
@@ -157,6 +172,13 @@ impl FrameParser {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn frame_error_display_is_readable() {
+        for e in [FrameError::Markers, FrameError::BadEscape, FrameError::TooShort, FrameError::TooLarge, FrameError::BadChecksum, FrameError::LengthMismatch] {
+            assert!(!e.to_string().is_empty() && e.to_string() != format!("{e:?}"));
+        }
+    }
     use crate::mdr::guard::{Mode, Table, check};
 
     fn cmd(table: Table, payload: &[u8]) -> AllowedCommand {

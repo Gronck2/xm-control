@@ -169,7 +169,7 @@ pub fn run<T: Transport>(transport: T, mac: u64, keep_mac: bool, listen: Duratio
             let (mut lost, mut timed_out) = (false, false);
             let rx_before = log.borrow().iter().filter(|e| !e.tx).count();
             let outcome = match check(c.table, c.payload, Mode::ReadOnly) {
-                Err(e) => Err(format!("refused by the guard ({e:?})")),
+                Err(e) => Err(format!("refused by the guard ({e})")),
                 Ok(a) => s.request(&a, c.payload[0] + 1).map(|f| show(&f.payload)).map_err(|e| {
                     lost = matches!(e, SessionError::Io(_));
                     timed_out = matches!(e, SessionError::Timeout);

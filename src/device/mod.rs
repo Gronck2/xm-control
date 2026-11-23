@@ -69,6 +69,20 @@ pub enum CommandError {
     Frame(FrameError),
 }
 
+impl std::fmt::Display for CommandError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CommandError::UnknownFeature(n) => write!(f, "unknown feature: {n}"),
+            CommandError::NotSupported(n) => write!(f, "this headset does not support {n}"),
+            CommandError::BadValue(v) => write!(f, "invalid value: {v}"),
+            CommandError::Guard(e) => write!(f, "the command was refused locally: {e}"),
+            CommandError::Frame(e) => write!(f, "could not build the command: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for CommandError {}
+
 #[derive(Debug)]
 #[allow(dead_code)] // fields are used by the UI and tests; the dev CLI only prints them
 pub enum Event {
@@ -308,6 +322,20 @@ impl Worker {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn command_error_display_is_readable() {
+        let all = [
+            CommandError::UnknownFeature("a".into()),
+            CommandError::NotSupported("a".into()),
+            CommandError::BadValue("a".into()),
+            CommandError::Guard(GuardError::Denied),
+            CommandError::Frame(FrameError::TooLarge),
+        ];
+        for e in &all {
+            assert!(!e.to_string().is_empty() && e.to_string() != format!("{e:?}"));
+        }
+    }
     use crate::mdr::frame::{TYPE_ACK, unpack};
     use mock::FakeHeadset;
     use std::sync::{Arc, Mutex};
