@@ -93,18 +93,22 @@ const ALLOW: &[(Table, &[u8], Kind)] = &[
     (Table::T1, &[0x26, 0x04], Kind::Get),                  // auto power-off parameter
     (Table::T1, &[0x20, 0x05], Kind::Get),                  // auto power-off (wearing) capability
     (Table::T1, &[0x26, 0x05], Kind::Get),                  // auto power-off (wearing) parameter
-    (Table::T1, &[0xF6, 0x01], Kind::Get),                  // auto pause on removal
-    (Table::T1, &[0x12, 0x02], Kind::Get),                  // codec indicator
-    (Table::T1, &[0xD6, 0x01], Kind::Get),                  // general setting 1
-    (Table::T1, &[0xD6, 0x02], Kind::Get),                  // general setting 2
-    (Table::T1, &[0xD6, 0x03], Kind::Get),                  // general setting 3
-    (Table::T1, &[0xD6, 0x04], Kind::Get),                  // general setting 4
-    (Table::T2, &[0xF2, 0x00], Kind::Get),                  // wearing status
-    (Table::T2, &[0x36, 0x01], Kind::Get),                  // multipoint (source switch control)
-    (Table::T2, &[0x36, 0x02], Kind::Get),                  // paired device list
-    (Table::T2, &[0x32, 0x02], Kind::Get),                  // pairing mode status
-    (Table::T2, &[0x5A, 0x00], Kind::Get),                  // safe listening HBS_1
-    (Table::T2, &[0x5A, 0x02], Kind::Get),                  // safe listening HBS_2
+    // power-off SET: only the wearing variant; no `24 ..` and no `28 04` row exists (src/device/power.rs)
+    (Table::T1, &[0x28, 0x05], Kind::Set(power_args)),
+    (Table::T1, &[0xF6, 0x01], Kind::Get), // auto pause on removal
+    // F8 01 shares F8 with the denied F8 09 reset; exactly one `00|01` after it
+    (Table::T1, &[0xF8, 0x01], Kind::Set(autopause_args)), // auto pause SET (00 = ON)
+    (Table::T1, &[0x12, 0x02], Kind::Get),                 // codec indicator
+    (Table::T1, &[0xD6, 0x01], Kind::Get),                 // general setting 1
+    (Table::T1, &[0xD6, 0x02], Kind::Get),                 // general setting 2
+    (Table::T1, &[0xD6, 0x03], Kind::Get),                 // general setting 3
+    (Table::T1, &[0xD6, 0x04], Kind::Get),                 // general setting 4
+    (Table::T2, &[0xF2, 0x00], Kind::Get),                 // wearing status
+    (Table::T2, &[0x36, 0x01], Kind::Get),                 // multipoint (source switch control)
+    (Table::T2, &[0x36, 0x02], Kind::Get),                 // paired device list
+    (Table::T2, &[0x32, 0x02], Kind::Get),                 // pairing mode status
+    (Table::T2, &[0x5A, 0x00], Kind::Get),                 // safe listening HBS_1
+    (Table::T2, &[0x5A, 0x02], Kind::Get),                 // safe listening HBS_2
 ];
 
 /// For SET rows that are a complete payload: no bytes may follow.
@@ -115,6 +119,16 @@ fn no_args(a: &[u8]) -> bool {
 /// After `F8 0C`: `<00 ON | 01 OFF> 01` (preview always off).
 fn stc_enable_args(a: &[u8]) -> bool {
     matches!(a, [0..=1, 1])
+}
+
+/// After `28 05`: `<10 WHEN_REMOVED | 11 DISABLE> 00` (lastSelect always 0).
+fn power_args(a: &[u8]) -> bool {
+    matches!(a, [0x10 | 0x11, 0])
+}
+
+/// After `F8 01`: `<00 ON | 01 OFF>`.
+fn autopause_args(a: &[u8]) -> bool {
+    matches!(a, [0..=1])
 }
 
 /// After `FC 0C`: sensitivity 0..=2, timeout 0..=3.
@@ -324,6 +338,10 @@ mod tests {
         // E8 is also the listening-mode SET: only the two DSEE payloads may start with it
         let e8: Vec<_> = ALLOW.iter().filter(|r| r.1[0] == 0xE8).map(|r| (r.0, r.1)).collect();
         assert_eq!(e8, [(Table::T1, &[0xE8, 0x01, 0x00][..]), (Table::T1, &[0xE8, 0x01, 0x01][..])]);
+        // power off now / factory power off / link control live under 24: never allowlisted; 28 only as the wearing variant 28 05
+        assert!(!ALLOW.iter().any(|r| r.1[0] == 0x24));
+        let sets28: Vec<_> = ALLOW.iter().filter(|r| r.1[0] == 0x28).map(|r| r.1).collect();
+        assert_eq!(sets28, [&[0x28, 0x05][..]]);
         // a SET row's argument bytes must not turn it into a denied command (the denylist looks at up to the third byte)
         for (table, prefix, _) in ALLOW.iter().filter(|r| matches!(r.2, Kind::Set(_))) {
             for b in 0..=255u8 {
