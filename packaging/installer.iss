@@ -9,6 +9,7 @@
 #endif
 
 [Setup]
+SetupIconFile=..\assets\xm-control.ico
 AppId={{3B7E2D41-9C5A-4F86-A0D3-6E1F8B2C7A95}
 AppName=XM Control
 AppVersion={#AppVersion}

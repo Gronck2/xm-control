@@ -735,15 +735,22 @@ pub fn run() -> Result<(), String> {
         // the trackbar class lives in comctl32
         InitCommonControlsEx(&INITCOMMONCONTROLSEX { dwSize: size_of::<INITCOMMONCONTROLSEX>() as u32, dwICC: ICC_BAR_CLASSES });
         let instance = GetModuleHandleW(null());
-        let wc = WNDCLASSW {
+        // icon resource 1 (see app.rc); a failed load gives a null handle, i.e. the default icon
+        let icon = |cx, cy| {
+            LoadImageW(instance, std::ptr::without_provenance::<u16>(1), IMAGE_ICON, GetSystemMetrics(cx), GetSystemMetrics(cy), LR_DEFAULTCOLOR) as HICON
+        };
+        let wc = WNDCLASSEXW {
+            cbSize: size_of::<WNDCLASSEXW>() as u32,
             lpfnWndProc: Some(wndproc),
             hInstance: instance,
+            hIcon: icon(SM_CXICON, SM_CYICON),
+            hIconSm: icon(SM_CXSMICON, SM_CYSMICON),
             hCursor: LoadCursorW(null_mut(), IDC_ARROW),
             hbrBackground: (COLOR_BTNFACE + 1) as usize as HBRUSH,
             lpszClassName: class.as_ptr(),
             ..std::mem::zeroed()
         };
-        if RegisterClassW(&wc) == 0 {
+        if RegisterClassExW(&wc) == 0 {
             return Err("cannot register the window class".into());
         }
         let hwnd = CreateWindowExW(
@@ -776,4 +783,17 @@ pub fn run() -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn app_icon_has_all_sizes() {
+        let ico = include_bytes!("../../assets/xm-control.ico");
+        let word = |i: usize| u16::from_le_bytes([ico[i], ico[i + 1]]);
+        assert_eq!((word(0), word(2), word(4)), (0, 1, 6));
+        // width byte 0 means 256
+        let sizes: Vec<u32> = (0..6).map(|n| if ico[6 + 16 * n] == 0 { 256 } else { ico[6 + 16 * n] as u32 }).collect();
+        assert_eq!(sizes, [16, 24, 32, 48, 64, 256]);
+    }
 }

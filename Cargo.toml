@@ -24,3 +24,6 @@ windows-sys = { version = "0.61", features = [
 [profile.release]
 lto = true
 strip = true
+
+[build-dependencies]
+embed-resource = "3"
